@@ -11,6 +11,8 @@ import shutil
 import threading
 import time
 import zipfile
+import psutil
+import re
 
 app = Flask(__name__)
 app.secret_key = 'jubayer-super-secret-key-2026'
@@ -18,15 +20,87 @@ app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 
 USERS_FILE = 'users.json'
 BOTS_DIR = 'bots'
+CPU_HISTORY = {}
+CRASH_COUNT = {}
+
+os.makedirs(BOTS_DIR, exist_ok=True)
+
+# ============================================
+# রেট লিমিট
+# ============================================
+
+class RateLimiter:
+    def check_rate(self, server_id, limit_percent):
+        if server_id not in CPU_HISTORY:
+            CPU_HISTORY[server_id] = []
+        users = load_users()
+        server = None
+        for uname, data in users.items():
+            for s in data.get('servers', []):
+                if s.get('server_id') == server_id:
+                    server = s
+                    break
+        if not server or server.get('status') != 'running':
+            return False, 0
+        pid = server.get('pid')
+        if not pid:
+            return False, 0
+        try:
+            proc = psutil.Process(pid)
+            cpu = proc.cpu_percent(interval=1)
+            now = time.time()
+            CPU_HISTORY[server_id].append({'time': now, 'cpu': cpu})
+            CPU_HISTORY[server_id] = [h for h in CPU_HISTORY[server_id] if now - h['time'] < 30]
+            recent = [h['cpu'] for h in CPU_HISTORY[server_id] if now - h['time'] < 10]
+            if recent:
+                avg_cpu = sum(recent) / len(recent)
+                if avg_cpu > limit_percent:
+                    return True, avg_cpu
+        except:
+            pass
+        return False, 0
+
+rate_limiter = RateLimiter()
+
+# ============================================
+# অটো-রিস্টার্ট (শুধু ক্র্যাশ)
+# ============================================
+
+def should_auto_restart(server_id):
+    if server_id not in CRASH_COUNT:
+        CRASH_COUNT[server_id] = {'count': 0, 'last_crash': time.time()}
+    crash_info = CRASH_COUNT[server_id]
+    if time.time() - crash_info['last_crash'] < 60:
+        if crash_info['count'] >= 3:
+            return False, "Too many crashes!"
+    else:
+        crash_info['count'] = 0
+    crash_info['count'] += 1
+    crash_info['last_crash'] = time.time()
+    return True, None
+
+# ============================================
+# নোটিফিকেশন
+# ============================================
+
+def create_notification(server_id, title, message, type='warning'):
+    server_dir = get_server_dir(server_id)
+    log_file = os.path.join(server_dir, 'output.log')
+    emoji = {'warning': '⚠️', 'error': '❌', 'info': 'ℹ️', 'success': '✅'}.get(type, '📢')
+    log_message = f"\n{'='*50}\n{emoji} {title}\n{'='*50}\n{message}\n{'='*50}\n"
+    try:
+        with open(log_file, 'a', encoding='utf-8') as f:
+            f.write(log_message)
+    except:
+        pass
+
+# ============================================
+# হেল্পার
+# ============================================
 
 def load_users():
     if not os.path.exists(USERS_FILE):
-        default = {
-            "admin": {
-                "password": "admin123",
-                "role": "admin"
-            }
-        }
+        default = {"admin": {"password": "admin123", "role": "admin"}}
         save_users(default)
         return default
     with open(USERS_FILE, 'r', encoding='utf-8') as f:
@@ -36,131 +110,224 @@ def save_users(data):
     with open(USERS_FILE, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
-def generate_server_link():
-    p1 = random.randint(10, 99)
-    p2 = random.randint(100, 999)
-    p3 = random.randint(100, 999)
-    p4 = random.randint(10, 99)
-    code = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
-    return f"{p1}-{p2}-{p3}-{p4}-{code}"
-
-def clean_path(path):
-    """পাথ ক্লিন করে - শুধু শেষ অংশ নেয়"""
-    return os.path.basename(str(path))
-
-def get_user_server_dir(server_id):
-    """সঠিক পাথ ফেরত দেয় - bots/clean_id/"""
-    clean_id = clean_path(server_id)
-    server_dir = os.path.join(BOTS_DIR, clean_id)
+def get_server_dir(server_id):
+    server_dir = os.path.join(BOTS_DIR, server_id)
     os.makedirs(server_dir, exist_ok=True)
     return server_dir
 
-def create_default_files(server_dir):
-    main_path = os.path.join(server_dir, 'main.py')
-    if not os.path.exists(main_path):
-        with open(main_path, 'w', encoding='utf-8') as f:
-            f.write('''# JUBAYER HOSTING - Default Bot
-print("Bot is running on JUBAYER HOSTING")
-print("Server is ready!")
+def check_server_valid(server_id):
+    users = load_users()
+    for uname, data in users.items():
+        if uname != 'admin':
+            for s in data.get('servers', []):
+                if s.get('server_id') == server_id:
+                    expiry = s.get('expiry', '')
+                    if expiry:
+                        try:
+                            exp_date = datetime.strptime(expiry, '%Y-%m-%d %H:%M:%S.%f')
+                            if datetime.now() > exp_date:
+                                return False, "expired"
+                        except:
+                            pass
+                    return True, s
+    return False, "deleted"
 
+def create_default_files(server_dir):
+    main_py = os.path.join(server_dir, 'main.py')
+    if not os.path.exists(main_py):
+        with open(main_py, 'w', encoding='utf-8') as f:
+            f.write('''# JUBAYER HOSTING - Default Bot
 import time
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
+
+print("=" * 40)
+print("🚀 Bot is running on JUBAYER HOSTING")
+print("✅ Server is ready!")
+print("=" * 40)
+
+counter = 0
 while True:
-    print(f"Server active at {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    time.sleep(30)
+    counter += 1
+    print(f"[{time.strftime('%H:%M:%S')}] 💓 Heartbeat #{counter} | Server active")
+    time.sleep(10)
 ''')
     
-    req_path = os.path.join(server_dir, 'requirements.txt')
-    if not os.path.exists(req_path):
-        with open(req_path, 'w', encoding='utf-8') as f:
+    req_file = os.path.join(server_dir, 'requirements.txt')
+    if not os.path.exists(req_file):
+        with open(req_file, 'w', encoding='utf-8') as f:
             f.write('# Add your pip packages here\n')
 
-def run_user_bot(server_id, main_file, requirements_file=None):
-    """ইউজারের বট রান করায় - subprocess ফিক্স সহ"""
-    # আইডি ক্লিন করো
-    clean_id = clean_path(server_id)
-    server_dir = get_user_server_dir(clean_id)
-    main_file_clean = clean_path(main_file.strip())
-    main_path = os.path.join(server_dir, main_file_clean)
-    log_file = os.path.join(server_dir, 'output.log')
+def get_installed_modules():
+    try:
+        result = subprocess.run([sys.executable, '-m', 'pip', 'list'], 
+                              capture_output=True, text=True, timeout=30)
+        modules = []
+        for line in result.stdout.split('\n')[2:]:
+            if line.strip():
+                parts = line.split()
+                if parts:
+                    modules.append(parts[0].lower())
+        return modules
+    except:
+        return []
+
+def get_imports_from_file(filepath):
+    imports = set()
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            content = f.read()
+        for line in content.split('\n'):
+            line = line.strip()
+            if line.startswith('#'):
+                continue
+            match = re.match(r'^(?:import|from)\s+(\w+)', line)
+            if match:
+                module = match.group(1).split('.')[0]
+                if module not in sys.stdlib_module_names:
+                    imports.add(module)
+    except:
+        pass
+    return imports
+
+def auto_install_modules(server_dir, main_file, log_callback=None):
+    if log_callback is None:
+        log_callback = print
     
-    print(f"[DEBUG] ========== BOT START ==========")
-    print(f"[DEBUG] Original ID: {server_id}")
-    print(f"[DEBUG] Clean ID: {clean_id}")
-    print(f"[DEBUG] Server Dir: {server_dir}")
-    print(f"[DEBUG] Main File: {main_file_clean}")
-    print(f"[DEBUG] Main Path: {main_path}")
-    print(f"[DEBUG] File exists: {os.path.exists(main_path)}")
+    all_imports = set()
+    for root, dirs, files in os.walk(server_dir):
+        for file in files:
+            if file.endswith('.py'):
+                imports = get_imports_from_file(os.path.join(root, file))
+                all_imports.update(imports)
     
-    if not os.path.exists(main_path):
-        if os.path.exists(server_dir):
-            print(f"[DEBUG] Files in {server_dir}: {os.listdir(server_dir)}")
-        return None, f"Main file '{main_file_clean}' not found at {main_path}"
+    installed = get_installed_modules()
+    missing = []
+    special = {'pil':'Pillow','cv2':'opencv-python','sklearn':'scikit-learn',
+               'bs4':'beautifulsoup4','telebot':'pyTelegramBotAPI','discord':'discord.py'}
     
-    # Requirements install
-    if requirements_file:
-        req_file_clean = clean_path(requirements_file)
-        req_path = os.path.join(server_dir, req_file_clean)
-        if os.path.exists(req_path):
+    for module in all_imports:
+        pip_name = special.get(module.lower(), module.lower())
+        if module.lower() not in installed and pip_name.lower() not in installed:
+            missing.append(pip_name)
+    
+    if missing:
+        for module in missing:
             try:
-                subprocess.run([sys.executable, '-m', 'pip', 'install', '-r', req_path], 
-                             capture_output=True, text=True, cwd=server_dir, timeout=60)
+                subprocess.run([sys.executable, '-m', 'pip', 'install', module],
+                             capture_output=True, timeout=120, cwd=server_dir)
             except:
                 pass
+
+def run_bot(server_id, main_file='main.py', requirements_file=None):
+    server_dir = get_server_dir(server_id)
+    main_path = os.path.join(server_dir, main_file)
+    log_file = os.path.join(server_dir, 'output.log')
     
-    # পুরনো লগ ডিলিট
+    def log_to_file(message):
+        try:
+            with open(log_file, 'a', encoding='utf-8') as f:
+                f.write(f"[{datetime.now().strftime('%H:%M:%S')}] {message}\n")
+                f.flush()
+        except:
+            pass
+    
+    if not os.path.exists(main_path):
+        return None, f"ERROR: {main_file} not found!"
+    
     if os.path.exists(log_file):
-        os.remove(log_file)
+        try:
+            os.remove(log_file)
+        except:
+            pass
     
-    # 🔥 ফিক্সড: শুধু লিস্ট পাস করো, ডাবল পাথ হবে না
+    log_to_file("🔧 Checking modules...")
+    auto_install_modules(server_dir, main_file, log_callback=log_to_file)
+    log_to_file("=" * 50)
+    
     try:
-        # বট রান করার কমান্ড - শুধু লিস্ট ফরম্যাট
-        cmd = [sys.executable, main_path]
-        print(f"[DEBUG] Running command: {' '.join(cmd)}")
-        print(f"[DEBUG] Working directory: {server_dir}")
+        env = os.environ.copy()
+        env['PYTHONIOENCODING'] = 'utf-8'
+        env['PYTHONUTF8'] = '1'
         
-        if sys.platform == 'win32':
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                cwd=server_dir,
-                text=True,
-                bufsize=1,
-                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0
-            )
-        else:
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                cwd=server_dir,
-                text=True,
-                bufsize=1
-            )
+        proc = subprocess.Popen(
+            [sys.executable, '-X', 'utf8', os.path.abspath(main_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            cwd=server_dir,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            bufsize=1,
+            env=env,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+        )
         
-        print(f"[DEBUG] Process started with PID: {proc.pid}")
+        log_to_file(f"🚀 PID: {proc.pid}")
+        log_to_file("=" * 50)
         
-        def capture_output():
-            with open(log_file, 'a', encoding='utf-8') as log_f:
-                for line in iter(proc.stdout.readline, ''):
-                    if line:
-                        line = line.rstrip('\n\r')
+        def rate_monitor():
+            users = load_users()
+            server = None
+            for uname, data in users.items():
+                for s in data.get('servers', []):
+                    if s.get('server_id') == server_id:
+                        server = s
+                        break
+            cpu_limit = server.get('cpu_limit', 80) if server else 80
+            
+            while proc.poll() is None:
+                time.sleep(5)
+                exceeded, avg_cpu = rate_limiter.check_rate(server_id, cpu_limit)
+                if exceeded:
+                    log_to_file(f"⚠️ CPU Limit! {avg_cpu:.1f}% > {cpu_limit}%")
+                    proc.terminate()
+                    time.sleep(2)
+                    if proc.poll() is None:
+                        proc.kill()
+                    users = load_users()
+                    for uname, data in users.items():
+                        for s in data.get('servers', []):
+                            if s.get('server_id') == server_id:
+                                s['status'] = 'stopped'
+                                s['pid'] = None
+                                s['rate_limit_exceeded'] = True
+                                s['stopped_by_user'] = False
+                                save_users(users)
+                                break
+                    break
+        
+        threading.Thread(target=rate_monitor, daemon=True).start()
+        
+        def log_output():
+            try:
+                with open(log_file, 'a', encoding='utf-8') as f:
+                    for line in iter(proc.stdout.readline, ''):
                         if line:
-                            timestamp = datetime.now().strftime('%H:%M:%S')
-                            log_f.write(f"[{timestamp}] {line}\n")
-                            log_f.flush()
-                proc.stdout.close()
+                            line = line.strip()
+                            if line:
+                                f.write(f"[{datetime.now().strftime('%H:%M:%S')}] {line}\n")
+                                f.flush()
+            except:
+                pass
         
-        thread = threading.Thread(target=capture_output)
-        thread.daemon = True
-        thread.start()
-        
+        threading.Thread(target=log_output, daemon=True).start()
         return proc.pid, None
+        
     except Exception as e:
-        print(f"[DEBUG] ERROR starting process: {str(e)}")
         return None, str(e)
 
-def monitor_process(server_id, pid):
+def stop_bot_process(pid):
+    try:
+        if sys.platform == 'win32':
+            subprocess.run(['taskkill', '/F', '/PID', str(pid)], capture_output=True)
+        else:
+            os.kill(pid, 15)
+        return True
+    except:
+        return False
+
+def monitor_bot(server_id, pid):
     while True:
         try:
             if sys.platform == 'win32':
@@ -169,39 +336,76 @@ def monitor_process(server_id, pid):
                 if str(pid) not in result.stdout:
                     break
             else:
-                os.kill(pid, 0)
+                try:
+                    os.kill(pid, 0)
+                except:
+                    break
         except:
             break
         time.sleep(5)
     
+    # 🔥 শুধু ক্র্যাশ হলে রিস্টার্ট
     users = load_users()
+    server = None
     for uname, data in users.items():
-        for server in data.get('servers', []):
-            if server['server_id'] == server_id:
-                server['status'] = 'stopped'
-                server['pid'] = None
-                save_users(users)
+        for s in data.get('servers', []):
+            if s.get('server_id') == server_id:
+                server = s
                 break
-        break
+    
+    if not server:
+        return
+    
+    # ইউজার নিজে বন্ধ করলে অটো-রিস্টার্ট হবে না
+    if server.get('stopped_by_user'):
+        return
+    
+    # Rate limit এর জন্য বন্ধ হলে রিস্টার্ট হবে না
+    if server.get('rate_limit_exceeded'):
+        return
+    
+    # শুধু ক্র্যাশ হলে অটো-রিস্টার্ট
+    should_restart, reason = should_auto_restart(server_id)
+    
+    if should_restart:
+        create_notification(server_id, "🔄 Auto-Restart", "Server crashed. Restarting...", "warning")
+        time.sleep(3)
+        
+        new_pid, error = run_bot(server_id, server.get('main_file', 'main.py'), server.get('requirements_file'))
+        
+        if new_pid:
+            users = load_users()
+            for uname, data in users.items():
+                for s in data.get('servers', []):
+                    if s.get('server_id') == server_id:
+                        s['status'] = 'running'
+                        s['pid'] = new_pid
+                        s['started_at'] = str(datetime.now())
+                        s['rate_limit_exceeded'] = False
+                        s['stopped_by_user'] = False
+                        save_users(users)
+                        break
+            create_notification(server_id, "✅ Restarted", f"PID: {new_pid}", "success")
+            threading.Thread(target=monitor_bot, args=(server_id, new_pid), daemon=True).start()
 
-def check_server_exists(server_link):
-    users = load_users()
-    for uname, data in users.items():
-        if uname != 'admin' and data.get('role') == 'user':
-            for server in data.get('servers', []):
-                if server['link'] == server_link:
-                    expiry_str = server.get('expiry', '')
-                    if expiry_str and expiry_str != 'N/A':
-                        try:
-                            expiry_date = datetime.strptime(expiry_str, '%Y-%m-%d %H:%M:%S.%f')
-                            if datetime.now() > expiry_date:
-                                return False, "expired"
-                        except:
-                            pass
-                    return True, server
-    return False, None
+def get_process_stats(pid):
+    try:
+        proc = psutil.Process(pid)
+        cpu = proc.cpu_percent(interval=0.5)
+        mem = proc.memory_info()
+        ram = mem.rss / (1024 * 1024)
+        return {
+            'cpu_percent': round(cpu, 1),
+            'ram_mb': round(ram, 1),
+            'ram_display': f"{ram:.1f} MB" if ram < 1024 else f"{ram/1024:.1f} GB",
+            'net_in': 0, 'net_out': 0
+        }
+    except:
+        return {'cpu_percent': 0, 'ram_mb': 0, 'ram_display': '0 MB', 'net_in': 0, 'net_out': 0}
 
-# ==================== MAIN ROUTES ====================
+# ============================================
+# রাউটস
+# ============================================
 
 @app.route('/')
 def index():
@@ -209,527 +413,395 @@ def index():
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    server_link = request.args.get('server', None)
-    
-    if server_link:
-        exists, result = check_server_exists(server_link)
-        if not exists:
-            if result == "expired":
-                return render_template('error.html', error_type="expired", server_link=server_link)
-            else:
-                return render_template('error.html', error_type="deleted", server_link=server_link)
-    
     if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
+        username = request.form.get('username', '')
+        password = request.form.get('password', '')
         users = load_users()
-        
-        if not server_link and username == 'admin' and password == users.get('admin', {}).get('password'):
+        if username == 'admin' and password == users.get('admin', {}).get('password'):
             session['user'] = 'admin'
             session['role'] = 'admin'
             return redirect(url_for('admin_dashboard'))
-        
-        if server_link:
-            for uname, data in users.items():
-                if uname != 'admin' and data.get('role') == 'user':
-                    for server in data.get('servers', []):
-                        if server['link'] == server_link:
-                            if username == uname and password == data.get('password'):
-                                session['user'] = uname
-                                session['role'] = 'user'
-                                session['current_server_link'] = server_link
-                                session['current_server_id'] = server['server_id']
-                                return redirect(url_for('server_dashboard', server_link=server_link))
-                            else:
-                                return render_template('login.html', error="Invalid credentials", server_link=server_link)
-        
-        return render_template('login.html', error="Invalid username or password", server_link=server_link)
-    
-    return render_template('login.html', error=None, server_link=server_link)
+        return render_template('login.html', error="Invalid credentials!")
+    return render_template('login.html', error=None)
 
-@app.route('/server/<server_link>')
-def server_dashboard(server_link):
-    exists, result = check_server_exists(server_link)
-    if not exists:
-        if result == "expired":
-            return render_template('error.html', error_type="expired", server_link=server_link)
-        else:
-            return render_template('error.html', error_type="deleted", server_link=server_link)
+@app.route('/<server_id>/login', methods=['GET', 'POST'])
+def server_login(server_id):
+    valid, result = check_server_valid(server_id)
+    if not valid:
+        return render_template('error.html', error_type=result if result else "deleted", server_link=server_id)
+    server = result
     
-    if 'user' in session and session.get('role') == 'user':
+    if request.method == 'POST':
+        username = request.form.get('username', '')
+        password = request.form.get('password', '')
         users = load_users()
-        user_data = users.get(session['user'], {})
-        for server in user_data.get('servers', []):
-            if server['link'] == server_link:
-                session['current_server_link'] = server_link
-                session['current_server_id'] = server['server_id']
-                return render_user_panel(server_link)
-    
-    return redirect(url_for('login', server=server_link))
+        for uname, data in users.items():
+            if uname != 'admin':
+                for s in data.get('servers', []):
+                    if s.get('server_id') == server_id:
+                        if username == uname and password == data.get('password'):
+                            session['user'] = uname
+                            session['role'] = 'user'
+                            session['current_server_id'] = server_id
+                            return redirect(url_for('server_home', server_id=server_id))
+                        else:
+                            return render_template('login.html', error="Invalid credentials!")
+        return render_template('login.html', error="Invalid login!")
+    return render_template('login.html', error=None)
 
-def render_user_panel(server_link):
-    users = load_users()
-    current_server = None
-    username = None
+@app.route('/<server_id>/home')
+def server_home(server_id):
+    if 'user' not in session or session.get('role') != 'user':
+        return redirect(url_for('server_login', server_id=server_id))
+    if session.get('current_server_id') != server_id:
+        session.clear()
+        return redirect(url_for('server_login', server_id=server_id))
     
-    for uname, data in users.items():
-        if uname != 'admin' and data.get('role') == 'user':
-            for server in data.get('servers', []):
-                if server['link'] == server_link:
-                    current_server = server
-                    username = uname
-                    break
-        if current_server:
-            break
+    valid, result = check_server_valid(server_id)
+    if not valid:
+        session.clear()
+        return render_template('error.html', error_type=result if result else "deleted", server_link=server_id)
     
-    if not current_server:
-        return render_template('error.html', error_type="deleted", server_link=server_link)
-    
-    return render_template('index.html',
-                         username=username,
-                         current_server=current_server,
-                         server_link=server_link)
+    return render_template('home.html', username=session['user'], current_server=result)
 
 @app.route('/logout')
 def logout():
-    server_link = session.get('current_server_link')
+    server_id = session.get('current_server_id')
     session.clear()
-    if server_link:
-        return redirect(url_for('login', server=server_link))
+    if server_id:
+        return redirect(url_for('server_login', server_id=server_id))
     return redirect(url_for('login'))
 
-# ==================== ADMIN ROUTES ====================
+# ============================================
+# অ্যাডমিন
+# ============================================
 
 @app.route('/admin')
 def admin_dashboard():
-    if 'user' not in session or session['role'] != 'admin':
+    if 'user' not in session or session.get('role') != 'admin':
         return redirect(url_for('login'))
-    
     users = load_users()
     user_list = []
     total_servers = 0
     total_running = 0
-    
-    for username, data in users.items():
-        if username != 'admin' and data.get('role') == 'user':
+    for uname, data in users.items():
+        if uname != 'admin':
             servers = data.get('servers', [])
-            running_count = sum(1 for s in servers if s.get('status') == 'running')
+            running = sum(1 for s in servers if s.get('status') == 'running')
             total_servers += len(servers)
-            total_running += running_count
+            total_running += running
             user_list.append({
-                'username': username,
-                'password': data.get('password'),
-                'servers': servers,
-                'server_count': len(servers),
-                'running_count': running_count,
-                'expiry': data.get('expiry', 'N/A'),
-                'created_at': data.get('created_at', 'N/A')
+                'username': uname, 'password': data.get('password', ''),
+                'servers': servers, 'server_count': len(servers), 'running_count': running
             })
-    
     return render_template('admin.html', users=user_list, total_servers=total_servers, total_running=total_running)
 
 @app.route('/admin/create_server', methods=['POST'])
 def create_server():
-    if 'user' not in session or session['role'] != 'admin':
+    if 'user' not in session or session.get('role') != 'admin':
         return jsonify({'error': 'Unauthorized'}), 403
     
     data = request.get_json()
-    username = data.get('username')
-    password = data.get('password')
-    server_type = data.get('server_type')
-    ram = data.get('ram')
-    disk = data.get('disk')
+    username = data.get('username', '')
+    password = data.get('password', '')
+    server_type = data.get('server_type', 'python')
+    ram = data.get('ram', '512MB')
+    disk = data.get('disk', '1GB')
     expiry_days = int(data.get('expiry_days', 30))
+    cpu_limit = int(data.get('cpu_limit', 80))
+    
+    if not username or not password:
+        return jsonify({'error': 'Required!'}), 400
     
     users = load_users()
-    
-    server_link = generate_server_link()
     server_id = str(uuid.uuid4())[:8]
-    
-    # সার্ভার ডিরেক্টরি ক্রিয়েট
-    server_dir = get_user_server_dir(server_id)
-    create_default_files(server_dir)
-    
-    print(f"[DEBUG] Created server - ID: {server_id}, Dir: {server_dir}")
-    
     expiry_date = datetime.now() + timedelta(days=expiry_days)
+    
+    create_default_files(get_server_dir(server_id))
     
     new_server = {
         'server_id': server_id,
-        'link': server_link,
-        'dashboard_url': f"/server/{server_link}",
-        'login_url': f"/login?server={server_link}",
-        'full_link': f"https://{server_link}",
-        'type': server_type,
-        'ram': ram,
-        'disk': disk,
-        'status': 'stopped',
-        'created': str(datetime.now()),
-        'expiry': str(expiry_date),
-        'expiry_days': expiry_days,
-        'main_file': 'main.py',
-        'requirements_file': 'requirements.txt',
-        'pid': None,
-        'started_at': None
+        'link': server_id,
+        'login_url': f"/{server_id}/login",
+        'dashboard_url': f"/{server_id}/home",
+        'full_link': f"http://localhost:5000/{server_id}/home",
+        'type': server_type, 'ram': ram, 'disk': disk,
+        'status': 'stopped', 'pid': None,
+        'created': str(datetime.now()), 'expiry': str(expiry_date),
+        'main_file': 'main.py', 'requirements_file': 'requirements.txt',
+        'cpu_limit': cpu_limit, 'rate_limit_exceeded': False, 'stopped_by_user': False
     }
     
     if username not in users:
-        users[username] = {
-            'password': password,
-            'role': 'user',
-            'created_at': str(datetime.now()),
-            'expiry': str(expiry_date),
-            'servers': []
-        }
-    else:
-        users[username]['password'] = password
+        users[username] = {'password': password, 'role': 'user', 'servers': []}
     
     users[username]['servers'].append(new_server)
     save_users(users)
     
     return jsonify({
-        'success': True,
-        'hostname': f"https://{server_link}",
-        'login_url': f"/login?server={server_link}",
-        'dashboard_url': f"/server/{server_link}",
-        'username': username,
-        'password': password,
+        'success': True, 'username': username, 'password': password,
+        'login_url': new_server['login_url'],
+        'hostname': f"http://localhost:5000/{server_id}/home",
         'server_id': server_id
     })
 
+@app.route('/admin/set_rate_limit/<server_id>', methods=['POST'])
+def set_rate_limit(server_id):
+    if 'user' not in session or session.get('role') != 'admin':
+        return jsonify({'error': 'Unauthorized'}), 403
+    cpu_limit = int(request.get_json().get('cpu_limit', 80))
+    users = load_users()
+    for uname, udata in users.items():
+        for s in udata.get('servers', []):
+            if s.get('server_id') == server_id:
+                s['cpu_limit'] = cpu_limit
+                save_users(users)
+                return jsonify({'success': True, 'cpu_limit': cpu_limit})
+    return jsonify({'error': 'Not found'}), 404
+
 @app.route('/admin/delete_server/<username>/<server_id>', methods=['POST'])
 def delete_server(username, server_id):
-    if 'user' not in session or session['role'] != 'admin':
+    if 'user' not in session or session.get('role') != 'admin':
         return jsonify({'error': 'Unauthorized'}), 403
-    
     users = load_users()
     if username in users:
-        servers = users[username].get('servers', [])
-        for server in servers:
-            if server['server_id'] == server_id:
-                if server.get('pid'):
-                    try:
-                        if sys.platform == 'win32':
-                            subprocess.run(['taskkill', '/F', '/PID', str(server['pid'])], capture_output=True)
-                        else:
-                            os.kill(server['pid'], 15)
-                    except:
-                        pass
-                server_dir = os.path.join(BOTS_DIR, clean_path(server_id))
-                if os.path.exists(server_dir):
-                    shutil.rmtree(server_dir)
+        for s in users[username].get('servers', []):
+            if s.get('server_id') == server_id:
+                if s.get('pid'):
+                    stop_bot_process(s['pid'])
+                try:
+                    shutil.rmtree(get_server_dir(server_id))
+                except:
+                    pass
                 break
-        
-        users[username]['servers'] = [s for s in servers if s['server_id'] != server_id]
-        
+        users[username]['servers'] = [s for s in users[username]['servers'] if s['server_id'] != server_id]
         if len(users[username]['servers']) == 0:
             del users[username]
-        
         save_users(users)
     return jsonify({'success': True})
 
-# ==================== FILE MANAGEMENT API ====================
-
-@app.route('/api/files/<server_id>')
-def list_files(server_id):
-    server_dir = get_user_server_dir(server_id)
-    files = []
-    try:
-        for item in os.listdir(server_dir):
-            item_path = os.path.join(server_dir, item)
-            files.append({
-                'name': item,
-                'is_dir': os.path.isdir(item_path),
-                'size': os.path.getsize(item_path) if os.path.isfile(item_path) else 0,
-                'modified': datetime.fromtimestamp(os.path.getmtime(item_path)).strftime('%Y-%m-%d %H:%M:%S')
-            })
-    except:
-        pass
-    return jsonify({'files': files})
-
-@app.route('/api/file/<server_id>', methods=['GET'])
-def get_file(server_id):
-    filename = request.args.get('filename')
-    if not filename:
-        return jsonify({'error': 'No filename'}), 400
-    
-    server_dir = get_user_server_dir(server_id)
-    filepath = os.path.join(server_dir, filename)
-    
-    if not os.path.exists(filepath) or os.path.isdir(filepath):
-        return jsonify({'error': 'File not found'}), 404
-    
-    with open(filepath, 'r', encoding='utf-8') as f:
-        content = f.read()
-    return jsonify({'content': content, 'filename': filename})
-
-@app.route('/api/file/<server_id>', methods=['POST'])
-def save_file(server_id):
-    data = request.get_json()
-    filename = data.get('filename')
-    content = data.get('content')
-    
-    server_dir = get_user_server_dir(server_id)
-    filepath = os.path.join(server_dir, filename)
-    
-    with open(filepath, 'w', encoding='utf-8') as f:
-        f.write(content)
-    
-    return jsonify({'success': True})
-
-@app.route('/api/file/<server_id>', methods=['DELETE'])
-def delete_file(server_id):
-    data = request.get_json()
-    filename = data.get('filename')
-    
-    server_dir = get_user_server_dir(server_id)
-    filepath = os.path.join(server_dir, filename)
-    
-    if os.path.exists(filepath):
-        if os.path.isdir(filepath):
-            shutil.rmtree(filepath)
-        else:
-            os.remove(filepath)
-    
-    return jsonify({'success': True})
-
-@app.route('/api/upload/<server_id>', methods=['POST'])
-def upload_file(server_id):
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file'}), 400
-    
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'error': 'No file selected'}), 400
-    
-    server_dir = get_user_server_dir(server_id)
-    filepath = os.path.join(server_dir, file.filename)
-    file.save(filepath)
-    
-    return jsonify({'success': True, 'filename': file.filename})
-
-@app.route('/api/create_folder/<server_id>', methods=['POST'])
-def create_folder(server_id):
-    data = request.get_json()
-    foldername = data.get('foldername')
-    
-    server_dir = get_user_server_dir(server_id)
-    folderpath = os.path.join(server_dir, foldername)
-    os.makedirs(folderpath, exist_ok=True)
-    
-    return jsonify({'success': True})
-
-@app.route('/api/rename/<server_id>', methods=['POST'])
-def rename_file(server_id):
-    data = request.get_json()
-    old_name = data.get('old_name')
-    new_name = data.get('new_name')
-    
-    server_dir = get_user_server_dir(server_id)
-    old_path = os.path.join(server_dir, old_name)
-    new_path = os.path.join(server_dir, new_name)
-    
-    if os.path.exists(old_path):
-        os.rename(old_path, new_path)
-        return jsonify({'success': True})
-    return jsonify({'error': 'File not found'}), 404
-
-@app.route('/api/unzip/<server_id>', methods=['POST'])
-def unzip_file(server_id):
-    data = request.get_json()
-    filename = data.get('filename')
-    
-    server_dir = get_user_server_dir(server_id)
-    zip_path = os.path.join(server_dir, filename)
-    
-    if not os.path.exists(zip_path) or not filename.endswith('.zip'):
-        return jsonify({'status': 'error', 'msg': 'Invalid zip file'}), 400
-    
-    try:
-        with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(server_dir)
-        return jsonify({'status': 'success', 'msg': 'File unzipped successfully'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'msg': str(e)}), 500
-
-# ==================== STARTUP & RUN API ====================
-
-@app.route('/api/get_startup/<server_id>')
-def get_startup(server_id):
-    users = load_users()
-    for uname, data in users.items():
-        for server in data.get('servers', []):
-            if server['server_id'] == server_id:
-                return jsonify({
-                    'main_file': server.get('main_file', 'main.py'),
-                    'requirements_file': server.get('requirements_file', 'requirements.txt')
-                })
-    return jsonify({'main_file': 'main.py', 'requirements_file': 'requirements.txt'})
-
-@app.route('/api/set_startup/<server_id>', methods=['POST'])
-def set_startup(server_id):
-    data = request.get_json()
-    main_file = data.get('main_file')
-    requirements_file = data.get('requirements_file')
-    
-    users = load_users()
-    for uname, udata in users.items():
-        for server in udata.get('servers', []):
-            if server['server_id'] == server_id:
-                server['main_file'] = main_file
-                server['requirements_file'] = requirements_file if requirements_file else None
-                save_users(users)
-                return jsonify({'success': True})
-    
-    return jsonify({'error': 'Server not found'}), 404
+# ============================================
+# বট API
+# ============================================
 
 @app.route('/api/run/<server_id>', methods=['POST'])
-def run_server(server_id):
+def api_run(server_id):
     users = load_users()
-    for uname, udata in users.items():
-        for server in udata.get('servers', []):
-            if server['server_id'] == server_id:
-                if server.get('status') == 'running':
-                    return jsonify({'status': 'error', 'msg': 'Server already running'})
-                
-                main_file = server.get('main_file', 'main.py')
-                req_file = server.get('requirements_file')
-                
-                pid, error = run_user_bot(server_id, main_file, req_file)
+    for uname, data in users.items():
+        for s in data.get('servers', []):
+            if s.get('server_id') == server_id:
+                if s.get('status') == 'running':
+                    return jsonify({'status': 'error', 'msg': 'Already running!'})
+                s['rate_limit_exceeded'] = False
+                s['stopped_by_user'] = False
+                pid, error = run_bot(server_id, s.get('main_file', 'main.py'), s.get('requirements_file'))
                 if pid:
-                    server['status'] = 'running'
-                    server['pid'] = pid
-                    server['started_at'] = str(datetime.now())
+                    s['status'] = 'running'
+                    s['pid'] = pid
+                    s['started_at'] = str(datetime.now())
                     save_users(users)
-                    
-                    monitor_thread = threading.Thread(target=monitor_process, args=(server_id, pid))
-                    monitor_thread.daemon = True
-                    monitor_thread.start()
-                    
-                    return jsonify({'status': 'success', 'msg': 'Server started'})
-                else:
-                    return jsonify({'status': 'error', 'msg': error or 'Failed to start'})
-    
-    return jsonify({'status': 'error', 'msg': 'Server not found'})
+                    threading.Thread(target=monitor_bot, args=(server_id, pid), daemon=True).start()
+                    return jsonify({'status': 'success', 'msg': 'Started!'})
+                return jsonify({'status': 'error', 'msg': error or 'Failed'})
+    return jsonify({'status': 'error', 'msg': 'Not found'})
 
 @app.route('/api/stop/<server_id>', methods=['POST'])
-def stop_server_api(server_id):
+def api_stop(server_id):
     users = load_users()
-    for uname, udata in users.items():
-        for server in udata.get('servers', []):
-            if server['server_id'] == server_id:
-                if server.get('status') == 'running' and server.get('pid'):
-                    try:
-                        if sys.platform == 'win32':
-                            subprocess.run(['taskkill', '/F', '/PID', str(server['pid'])], capture_output=True)
-                        else:
-                            os.kill(server['pid'], 15)
-                    except:
-                        pass
-                    server['status'] = 'stopped'
-                    server['pid'] = None
-                    save_users(users)
-                    return jsonify({'status': 'success', 'msg': 'Server stopped'})
-                else:
-                    return jsonify({'status': 'error', 'msg': 'Server already stopped'})
-    
-    return jsonify({'status': 'error', 'msg': 'Server not found'})
+    for uname, data in users.items():
+        for s in data.get('servers', []):
+            if s.get('server_id') == server_id:
+                if s.get('pid'):
+                    stop_bot_process(s['pid'])
+                s['status'] = 'stopped'
+                s['pid'] = None
+                s['stopped_by_user'] = True  # 🔥 ইউজার নিজে বন্ধ করেছে
+                save_users(users)
+                return jsonify({'status': 'success', 'msg': 'Stopped'})
+    return jsonify({'status': 'error', 'msg': 'Not found'})
 
 @app.route('/api/logs/<server_id>')
-def get_logs(server_id):
-    server_dir = get_user_server_dir(server_id)
-    log_file = os.path.join(server_dir, 'output.log')
-    
+def api_logs(server_id):
+    log_file = os.path.join(get_server_dir(server_id), 'output.log')
     if os.path.exists(log_file):
         with open(log_file, 'r', encoding='utf-8') as f:
             logs = f.read()
     else:
         logs = ""
-    
     return jsonify({'logs': logs})
 
 @app.route('/api/clear_logs/<server_id>', methods=['POST'])
-def clear_logs(server_id):
-    server_dir = get_user_server_dir(server_id)
-    log_file = os.path.join(server_dir, 'output.log')
-    
-    if os.path.exists(log_file):
-        os.remove(log_file)
-    
-    return jsonify({'status': 'success', 'msg': 'Logs cleared'})
+def api_clear_logs(server_id):
+    log_file = os.path.join(get_server_dir(server_id), 'output.log')
+    try:
+        if os.path.exists(log_file):
+            try:
+                os.remove(log_file)
+            except:
+                with open(log_file, 'w', encoding='utf-8') as f:
+                    f.write('')
+        return jsonify({'status': 'success', 'msg': 'Cleared'})
+    except:
+        return jsonify({'status': 'error'}), 500
 
 @app.route('/api/command', methods=['POST'])
-def run_command():
+def api_command():
     data = request.get_json()
     cmd = data.get('cmd', '')
     server_id = data.get('server_id', '')
-    
-    server_dir = get_user_server_dir(server_id)
-    log_file = os.path.join(server_dir, 'output.log')
-    
+    log_file = os.path.join(get_server_dir(server_id), 'output.log')
     try:
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=server_dir, timeout=30)
-        output = result.stdout + result.stderr
-        
-        timestamp = datetime.now().strftime('%H:%M:%S')
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, 
+                              cwd=get_server_dir(server_id), timeout=30)
+        output = (result.stdout + result.stderr)[:2000]
         with open(log_file, 'a', encoding='utf-8') as f:
-            f.write(f"[{timestamp}] $ {cmd}\n")
-            for line in output.split('\n'):
-                if line.strip():
-                    f.write(f"[{timestamp}] {line}\n")
-        
-        return jsonify({'status': 'success', 'output': output[:500]})
-    except subprocess.TimeoutExpired:
-        return jsonify({'status': 'error', 'msg': 'Command timeout'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'msg': str(e)})
+            f.write(f"[{datetime.now().strftime('%H:%M:%S')}] $ {cmd}\n{output}\n")
+        return jsonify({'status': 'success', 'output': output})
+    except:
+        return jsonify({'status': 'error', 'msg': 'Timeout'})
 
 @app.route('/api/stats/<server_id>')
-def get_stats(server_id):
+def api_stats(server_id):
     users = load_users()
-    for uname, udata in users.items():
-        for server in udata.get('servers', []):
-            if server['server_id'] == server_id:
-                uptime = "0h 0m 0s"
-                if server.get('status') == 'running' and server.get('started_at'):
+    for uname, data in users.items():
+        for s in data.get('servers', []):
+            if s.get('server_id') == server_id:
+                uptime = "0h 0m"
+                cpu = "0%"
+                ram = "0 MB"
+                if s.get('status') == 'running' and s.get('pid'):
+                    stats = get_process_stats(s['pid'])
+                    cpu = f"{stats['cpu_percent']}%"
+                    ram = stats['ram_display']
+                if s.get('status') == 'running' and s.get('started_at'):
                     try:
-                        start = datetime.strptime(server['started_at'], '%Y-%m-%d %H:%M:%S.%f')
+                        start = datetime.strptime(s['started_at'], '%Y-%m-%d %H:%M:%S.%f')
                         diff = datetime.now() - start
-                        hours = diff.seconds // 3600
-                        minutes = (diff.seconds % 3600) // 60
-                        seconds = diff.seconds % 60
-                        days = diff.days
-                        if days > 0:
-                            uptime = f"{days}d {hours}h {minutes}m"
+                        if diff.days > 0:
+                            uptime = f"{diff.days}d {diff.seconds//3600}h"
                         else:
-                            uptime = f"{hours}h {minutes}m {seconds}s"
+                            h = diff.seconds // 3600
+                            m = (diff.seconds % 3600) // 60
+                            s = diff.seconds % 60
+                            uptime = f"{h}h {m}m {s}s"
                     except:
                         pass
-                
                 return jsonify({
-                    'cpu': '0.5%',
-                    'ram': server.get('ram', '128 MiB'),
-                    'uptime': uptime,
-                    'net_in': '0.00 MiB',
-                    'net_out': '0.00 MiB',
-                    'status': server.get('status', 'stopped')
+                    'cpu': cpu, 'ram': ram, 'uptime': uptime,
+                    'net_in': '0 KB', 'net_out': '0 KB',
+                    'cpu_limit': s.get('cpu_limit', 80),
+                    'status': s.get('status', 'stopped')
                 })
-    
-    return jsonify({'cpu': '0%', 'ram': '0 MiB', 'uptime': '0h 0m 0s', 'net_in': '0 MiB', 'net_out': '0 MiB', 'status': 'unknown'})
+    return jsonify({'cpu': '0%', 'ram': '0 MB', 'uptime': '0h', 'net_in': '0 KB', 'net_out': '0 KB', 'status': 'unknown'})
+
+# ============================================
+# ফাইল API
+# ============================================
+
+@app.route('/api/files/<server_id>')
+def api_files(server_id):
+    files = []
+    for item in os.listdir(get_server_dir(server_id)):
+        item_path = os.path.join(get_server_dir(server_id), item)
+        files.append({
+            'name': item, 'is_dir': os.path.isdir(item_path),
+            'size': os.path.getsize(item_path) if os.path.isfile(item_path) else 0,
+            'modified': datetime.fromtimestamp(os.path.getmtime(item_path)).strftime('%Y-%m-%d %H:%M')
+        })
+    return jsonify({'files': files})
+
+@app.route('/api/file/<server_id>', methods=['GET'])
+def api_get_file(server_id):
+    filename = request.args.get('filename', '')
+    filepath = os.path.join(get_server_dir(server_id), filename)
+    if os.path.exists(filepath):
+        with open(filepath, 'r', encoding='utf-8') as f:
+            return jsonify({'content': f.read()})
+    return jsonify({'error': 'Not found'}), 404
+
+@app.route('/api/file/<server_id>', methods=['POST'])
+def api_save_file(server_id):
+    data = request.get_json()
+    with open(os.path.join(get_server_dir(server_id), data.get('filename', '')), 'w', encoding='utf-8') as f:
+        f.write(data.get('content', ''))
+    return jsonify({'success': True})
+
+@app.route('/api/file/<server_id>', methods=['DELETE'])
+def api_delete_file(server_id):
+    filepath = os.path.join(get_server_dir(server_id), request.get_json().get('filename', ''))
+    if os.path.exists(filepath):
+        if os.path.isdir(filepath):
+            shutil.rmtree(filepath)
+        else:
+            os.remove(filepath)
+    return jsonify({'success': True})
+
+@app.route('/api/upload/<server_id>', methods=['POST'])
+def api_upload(server_id):
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file'}), 400
+    request.files['file'].save(os.path.join(get_server_dir(server_id), request.files['file'].filename))
+    return jsonify({'success': True})
+
+@app.route('/api/create_folder/<server_id>', methods=['POST'])
+def api_create_folder(server_id):
+    os.makedirs(os.path.join(get_server_dir(server_id), request.get_json().get('foldername', '')), exist_ok=True)
+    return jsonify({'success': True})
+
+@app.route('/api/rename/<server_id>', methods=['POST'])
+def api_rename(server_id):
+    d = request.get_json()
+    old = os.path.join(get_server_dir(server_id), d.get('old_name', ''))
+    new = os.path.join(get_server_dir(server_id), d.get('new_name', ''))
+    if os.path.exists(old):
+        os.rename(old, new)
+        return jsonify({'success': True})
+    return jsonify({'error': 'Not found'}), 404
+
+@app.route('/api/unzip/<server_id>', methods=['POST'])
+def api_unzip(server_id):
+    zip_path = os.path.join(get_server_dir(server_id), request.get_json().get('filename', ''))
+    if os.path.exists(zip_path):
+        with zipfile.ZipFile(zip_path, 'r') as zf:
+            zf.extractall(get_server_dir(server_id))
+        return jsonify({'status': 'success'})
+    return jsonify({'status': 'error'}), 400
+
+@app.route('/api/get_startup/<server_id>')
+def api_get_startup(server_id):
+    users = load_users()
+    for uname, data in users.items():
+        for s in data.get('servers', []):
+            if s.get('server_id') == server_id:
+                return jsonify({
+                    'main_file': s.get('main_file', 'main.py'),
+                    'requirements_file': s.get('requirements_file', 'requirements.txt')
+                })
+    return jsonify({'main_file': 'main.py', 'requirements_file': 'requirements.txt'})
+
+@app.route('/api/set_startup/<server_id>', methods=['POST'])
+def api_set_startup(server_id):
+    d = request.get_json()
+    users = load_users()
+    for uname, udata in users.items():
+        for s in udata.get('servers', []):
+            if s.get('server_id') == server_id:
+                s['main_file'] = d.get('main_file', 'main.py')
+                s['requirements_file'] = d.get('requirements_file')
+                save_users(users)
+                return jsonify({'success': True})
+    return jsonify({'error': 'Not found'}), 404
+
+# ============================================
+# স্টার্ট
+# ============================================
 
 if __name__ == '__main__':
+    print("\n" + "=" * 60)
+    print("🚀 JUBAYER HOSTING - FINAL EMOJI SUPPORT")
     print("=" * 60)
-    print("🔥 JUBAYER HOSTING - FULLY FIXED VERSION 🔥")
-    print("=" * 60)
-    print("📍 Admin Login: http://localhost:5000/login")
-    print("👤 Username: admin")
-    print("🔑 Password: admin123")
-    print("=" * 60)
-    print("✅ ALL FIXES APPLIED:")
-    print("   - Double path error: FIXED")
-    print("   - Subprocess Popen: CORRECTED")
-    print("   - Main file path: CLEANED")
-    print("   - Debug logging: ENHANCED")
-    print("=" * 60)
-    
+    print("📍 http://localhost:5000/login (Admin)")
+    print("🔗 http://localhost:5000/{id}/login (User)")
+    print("👤 admin / admin123")
+    print("=" * 60 + "\n")
     app.run(debug=True, host='0.0.0.0', port=5000)
