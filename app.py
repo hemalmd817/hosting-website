@@ -12,7 +12,6 @@ import threading
 import time
 import zipfile
 import psutil
-import re
 
 app = Flask(__name__)
 app.secret_key = 'jubayer-super-secret-key-2026'
@@ -22,6 +21,7 @@ USERS_FILE = 'users.json'
 BOTS_DIR = 'bots'
 CPU_HISTORY = {}
 CRASH_COUNT = {}
+NET_STATS = {}
 
 os.makedirs(BOTS_DIR, exist_ok=True)
 
@@ -36,15 +36,17 @@ class RateLimiter:
         users = load_users()
         server = None
         for uname, data in users.items():
-            for s in data.get('servers', []):
-                if s.get('server_id') == server_id:
+            if uname == 'admin': continue
+            servers = data.get('servers', [])
+            if not isinstance(servers, list): continue
+            for s in servers:
+                if isinstance(s, dict) and s.get('server_id') == server_id:
                     server = s
                     break
         if not server or server.get('status') != 'running':
             return False, 0
         pid = server.get('pid')
-        if not pid:
-            return False, 0
+        if not pid: return False, 0
         try:
             proc = psutil.Process(pid)
             cpu = proc.cpu_percent(interval=1)
@@ -56,14 +58,13 @@ class RateLimiter:
                 avg_cpu = sum(recent) / len(recent)
                 if avg_cpu > limit_percent:
                     return True, avg_cpu
-        except:
-            pass
+        except: pass
         return False, 0
 
 rate_limiter = RateLimiter()
 
 # ============================================
-# অটো-রিস্টার্ট (শুধু ক্র্যাশ)
+# অটো-রিস্টার্ট
 # ============================================
 
 def should_auto_restart(server_id):
@@ -72,27 +73,12 @@ def should_auto_restart(server_id):
     crash_info = CRASH_COUNT[server_id]
     if time.time() - crash_info['last_crash'] < 60:
         if crash_info['count'] >= 3:
-            return False, "Too many crashes!"
+            return False
     else:
         crash_info['count'] = 0
     crash_info['count'] += 1
     crash_info['last_crash'] = time.time()
-    return True, None
-
-# ============================================
-# নোটিফিকেশন
-# ============================================
-
-def create_notification(server_id, title, message, type='warning'):
-    server_dir = get_server_dir(server_id)
-    log_file = os.path.join(server_dir, 'output.log')
-    emoji = {'warning': '⚠️', 'error': '❌', 'info': 'ℹ️', 'success': '✅'}.get(type, '📢')
-    log_message = f"\n{'='*50}\n{emoji} {title}\n{'='*50}\n{message}\n{'='*50}\n"
-    try:
-        with open(log_file, 'a', encoding='utf-8') as f:
-            f.write(log_message)
-    except:
-        pass
+    return True
 
 # ============================================
 # হেল্পার
@@ -104,7 +90,11 @@ def load_users():
         save_users(default)
         return default
     with open(USERS_FILE, 'r', encoding='utf-8') as f:
-        return json.load(f)
+        data = json.load(f)
+    if 'admin' not in data:
+        data['admin'] = {"password": "admin123", "role": "admin"}
+        save_users(data)
+    return data
 
 def save_users(data):
     with open(USERS_FILE, 'w', encoding='utf-8') as f:
@@ -118,19 +108,31 @@ def get_server_dir(server_id):
 def check_server_valid(server_id):
     users = load_users()
     for uname, data in users.items():
-        if uname != 'admin':
-            for s in data.get('servers', []):
-                if s.get('server_id') == server_id:
-                    expiry = s.get('expiry', '')
-                    if expiry:
-                        try:
-                            exp_date = datetime.strptime(expiry, '%Y-%m-%d %H:%M:%S.%f')
-                            if datetime.now() > exp_date:
-                                return False, "expired"
-                        except:
-                            pass
-                    return True, s
+        if uname == 'admin': continue
+        servers = data.get('servers', [])
+        if not isinstance(servers, list): continue
+        for s in servers:
+            if isinstance(s, dict) and s.get('server_id') == server_id:
+                expiry = s.get('expiry', '')
+                if expiry:
+                    try:
+                        exp_date = datetime.strptime(expiry, '%Y-%m-%d %H:%M:%S.%f')
+                        if datetime.now() > exp_date:
+                            return False, "expired"
+                    except: pass
+                return True, s
     return False, "deleted"
+
+def get_server_by_id(server_id):
+    users = load_users()
+    for uname, data in users.items():
+        if uname == 'admin': continue
+        servers = data.get('servers', [])
+        if not isinstance(servers, list): continue
+        for s in servers:
+            if isinstance(s, dict) and s.get('server_id') == server_id:
+                return s, uname
+    return None, None
 
 def create_default_files(server_dir):
     main_py = os.path.join(server_dir, 'main.py')
@@ -138,18 +140,16 @@ def create_default_files(server_dir):
         with open(main_py, 'w', encoding='utf-8') as f:
             f.write('''# JUBAYER HOSTING - Default Bot
 import time
-import sys
-sys.stdout.reconfigure(encoding='utf-8')
 
 print("=" * 40)
-print("🚀 Bot is running on JUBAYER HOSTING")
-print("✅ Server is ready!")
+print("Bot is running on JUBAYER HOSTING")
+print("Server is ready!")
 print("=" * 40)
 
 counter = 0
 while True:
     counter += 1
-    print(f"[{time.strftime('%H:%M:%S')}] 💓 Heartbeat #{counter} | Server active")
+    print(f"[{time.strftime('%H:%M:%S')}] Heartbeat #{counter} | Server active")
     time.sleep(10)
 ''')
     
@@ -158,137 +158,136 @@ while True:
         with open(req_file, 'w', encoding='utf-8') as f:
             f.write('# Add your pip packages here\n')
 
-def get_installed_modules():
-    try:
-        result = subprocess.run([sys.executable, '-m', 'pip', 'list'], 
-                              capture_output=True, text=True, timeout=30)
-        modules = []
-        for line in result.stdout.split('\n')[2:]:
-            if line.strip():
-                parts = line.split()
-                if parts:
-                    modules.append(parts[0].lower())
-        return modules
-    except:
-        return []
+# ============================================
+# বট রান
+# ============================================
 
-def get_imports_from_file(filepath):
-    imports = set()
-    try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            content = f.read()
-        for line in content.split('\n'):
-            line = line.strip()
-            if line.startswith('#'):
-                continue
-            match = re.match(r'^(?:import|from)\s+(\w+)', line)
-            if match:
-                module = match.group(1).split('.')[0]
-                if module not in sys.stdlib_module_names:
-                    imports.add(module)
-    except:
-        pass
-    return imports
-
-def auto_install_modules(server_dir, main_file, log_callback=None):
-    if log_callback is None:
-        log_callback = print
-    
-    all_imports = set()
-    for root, dirs, files in os.walk(server_dir):
-        for file in files:
-            if file.endswith('.py'):
-                imports = get_imports_from_file(os.path.join(root, file))
-                all_imports.update(imports)
-    
-    installed = get_installed_modules()
-    missing = []
-    special = {'pil':'Pillow','cv2':'opencv-python','sklearn':'scikit-learn',
-               'bs4':'beautifulsoup4','telebot':'pyTelegramBotAPI','discord':'discord.py'}
-    
-    for module in all_imports:
-        pip_name = special.get(module.lower(), module.lower())
-        if module.lower() not in installed and pip_name.lower() not in installed:
-            missing.append(pip_name)
-    
-    if missing:
-        for module in missing:
-            try:
-                subprocess.run([sys.executable, '-m', 'pip', 'install', module],
-                             capture_output=True, timeout=120, cwd=server_dir)
-            except:
-                pass
-
-def run_bot(server_id, main_file='main.py', requirements_file=None):
+def run_bot(server_id, main_file='main.py', requirements_file='requirements.txt'):
     server_dir = get_server_dir(server_id)
     main_path = os.path.join(server_dir, main_file)
     log_file = os.path.join(server_dir, 'output.log')
+    python_exe = sys.executable
     
-    def log_to_file(message):
+    def log(msg):
         try:
             with open(log_file, 'a', encoding='utf-8') as f:
-                f.write(f"[{datetime.now().strftime('%H:%M:%S')}] {message}\n")
+                f.write(f"{msg}\n")
                 f.flush()
-        except:
-            pass
+        except: pass
     
     if not os.path.exists(main_path):
         return None, f"ERROR: {main_file} not found!"
     
     if os.path.exists(log_file):
-        try:
-            os.remove(log_file)
-        except:
-            pass
+        try: os.remove(log_file)
+        except: open(log_file, 'w').close()
     
-    log_to_file("🔧 Checking modules...")
-    auto_install_modules(server_dir, main_file, log_callback=log_to_file)
-    log_to_file("=" * 50)
+    ts = lambda: datetime.now().strftime('%I:%M:%S %p')
+    
+    server, _ = get_server_by_id(server_id)
+    cpu_limit = server.get('cpu_limit', 80) if server else 80
+    log(f"[{ts()}] 🔍 Checking rate limit...")
+    log(f"[{ts()}] ✅ Rate limit: {cpu_limit}%")
+    log("")
+    
+    if requirements_file and requirements_file.strip():
+        req_path = os.path.join(server_dir, requirements_file.strip())
+        log(f"[{ts()}] 📦 Run: pip install -r {requirements_file}")
+        log("")
+        
+        if os.path.exists(req_path):
+            with open(req_path, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+            
+            lines = [l.strip() for l in content.split('\n') if l.strip() and not l.strip().startswith('#')]
+            
+            if lines:
+                try:
+                    proc = subprocess.Popen(
+                        [python_exe, '-m', 'pip', 'install', '-r', os.path.abspath(req_path), '--disable-pip-version-check'],
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        text=True, bufsize=1, universal_newlines=True,
+                        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
+                    )
+                    
+                    for line in iter(proc.stdout.readline, ''):
+                        if line.strip():
+                            log(f"[{ts()}] {line.rstrip()}")
+                    
+                    proc.wait()
+                    log("")
+                    
+                    if proc.returncode != 0:
+                        log(f"[{ts()}] ⚠️ Some packages failed to install")
+                    else:
+                        log(f"[{ts()}] ✅ Requirements installation complete!")
+                except Exception as e:
+                    log(f"[{ts()}] ❌ pip error: {str(e)}")
+            else:
+                log(f"[{ts()}] 📋 {requirements_file} is empty, skipping...")
+        else:
+            log(f"[{ts()}] 📋 {requirements_file} not found, skipping...")
+    else:
+        log(f"[{ts()}] 📋 No requirements file set, skipping...")
+    
+    log("")
+    log(f"[{ts()}] ▶️ Run: python {main_file}")
+    log(f"[{ts()}] Python {sys.version.split()[0]}")
+    log("")
     
     try:
+        main_path_abs = os.path.abspath(main_path)
         env = os.environ.copy()
         env['PYTHONIOENCODING'] = 'utf-8'
-        env['PYTHONUTF8'] = '1'
+        env['PYTHONUNBUFFERED'] = '1'
         
         proc = subprocess.Popen(
-            [sys.executable, '-X', 'utf8', os.path.abspath(main_path)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            [python_exe, main_path_abs],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             cwd=server_dir,
-            text=True,
-            encoding='utf-8',
-            errors='replace',
-            bufsize=1,
-            env=env,
+            text=True, encoding='utf-8', errors='replace',
+            bufsize=1, env=env, universal_newlines=True,
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
         )
         
-        log_to_file(f"🚀 PID: {proc.pid}")
-        log_to_file("=" * 50)
+        log(f"[{ts()}] ✅ Server marked as running")
+        log(f"[{ts()}] PID: {proc.pid}")
+        log("")
+        
+        try:
+            p = psutil.Process(proc.pid)
+            initial_io = p.io_counters()
+            NET_STATS[server_id] = {
+                'pid': proc.pid, 'start_time': time.time(),
+                'initial_read': initial_io.read_bytes if initial_io else 0,
+                'initial_write': initial_io.write_bytes if initial_io else 0,
+                'current_read': 0, 'current_write': 0
+            }
+        except:
+            NET_STATS[server_id] = {
+                'pid': proc.pid, 'start_time': time.time(),
+                'initial_read': 0, 'initial_write': 0,
+                'current_read': 0, 'current_write': 0
+            }
         
         def rate_monitor():
-            users = load_users()
-            server = None
-            for uname, data in users.items():
-                for s in data.get('servers', []):
-                    if s.get('server_id') == server_id:
-                        server = s
-                        break
-            cpu_limit = server.get('cpu_limit', 80) if server else 80
-            
             while proc.poll() is None:
                 time.sleep(5)
                 exceeded, avg_cpu = rate_limiter.check_rate(server_id, cpu_limit)
                 if exceeded:
-                    log_to_file(f"⚠️ CPU Limit! {avg_cpu:.1f}% > {cpu_limit}%")
+                    log(f"[{datetime.now().strftime('%I:%M:%S %p')}] ⚠️ CPU Limit! {avg_cpu:.1f}% > {cpu_limit}%")
+                    log(f"[{datetime.now().strftime('%I:%M:%S %p')}] 🛑 Stopping server due to rate limit...")
                     proc.terminate()
                     time.sleep(2)
-                    if proc.poll() is None:
-                        proc.kill()
+                    if proc.poll() is None: proc.kill()
+                    
                     users = load_users()
                     for uname, data in users.items():
-                        for s in data.get('servers', []):
-                            if s.get('server_id') == server_id:
+                        if uname == 'admin': continue
+                        servers = data.get('servers', [])
+                        if not isinstance(servers, list): continue
+                        for s in servers:
+                            if isinstance(s, dict) and s.get('server_id') == server_id:
                                 s['status'] = 'stopped'
                                 s['pid'] = None
                                 s['rate_limit_exceeded'] = True
@@ -296,25 +295,34 @@ def run_bot(server_id, main_file='main.py', requirements_file=None):
                                 save_users(users)
                                 break
                     break
+                
+                try:
+                    p = psutil.Process(proc.pid)
+                    io = p.io_counters()
+                    if io and server_id in NET_STATS:
+                        NET_STATS[server_id]['current_read'] = io.read_bytes
+                        NET_STATS[server_id]['current_write'] = io.write_bytes
+                except: pass
         
         threading.Thread(target=rate_monitor, daemon=True).start()
         
-        def log_output():
+        def stream_output():
             try:
                 with open(log_file, 'a', encoding='utf-8') as f:
                     for line in iter(proc.stdout.readline, ''):
                         if line:
-                            line = line.strip()
+                            line = line.rstrip('\n\r')
                             if line:
-                                f.write(f"[{datetime.now().strftime('%H:%M:%S')}] {line}\n")
+                                f.write(f"[{datetime.now().strftime('%I:%M:%S %p')}] {line}\n")
                                 f.flush()
-            except:
-                pass
+            except: pass
         
-        threading.Thread(target=log_output, daemon=True).start()
+        threading.Thread(target=stream_output, daemon=True).start()
+        
         return proc.pid, None
         
     except Exception as e:
+        log(f"[{ts()}] ❌ Error: {str(e)}")
         return None, str(e)
 
 def stop_bot_process(pid):
@@ -324,60 +332,38 @@ def stop_bot_process(pid):
         else:
             os.kill(pid, 15)
         return True
-    except:
-        return False
+    except: return False
 
 def monitor_bot(server_id, pid):
     while True:
         try:
             if sys.platform == 'win32':
-                result = subprocess.run(['tasklist', '/FI', f'PID eq {pid}'], 
-                                       capture_output=True, text=True)
+                result = subprocess.run(['tasklist', '/FI', f'PID eq {pid}'], capture_output=True, text=True)
                 if str(pid) not in result.stdout:
                     break
             else:
-                try:
-                    os.kill(pid, 0)
-                except:
-                    break
-        except:
-            break
+                try: os.kill(pid, 0)
+                except: break
+        except: break
         time.sleep(5)
     
-    # 🔥 শুধু ক্র্যাশ হলে রিস্টার্ট
-    users = load_users()
-    server = None
-    for uname, data in users.items():
-        for s in data.get('servers', []):
-            if s.get('server_id') == server_id:
-                server = s
-                break
+    server, _ = get_server_by_id(server_id)
+    if not server: return
+    if server.get('stopped_by_user'): return
+    if server.get('rate_limit_exceeded'): return
     
-    if not server:
-        return
-    
-    # ইউজার নিজে বন্ধ করলে অটো-রিস্টার্ট হবে না
-    if server.get('stopped_by_user'):
-        return
-    
-    # Rate limit এর জন্য বন্ধ হলে রিস্টার্ট হবে না
-    if server.get('rate_limit_exceeded'):
-        return
-    
-    # শুধু ক্র্যাশ হলে অটো-রিস্টার্ট
-    should_restart, reason = should_auto_restart(server_id)
-    
-    if should_restart:
-        create_notification(server_id, "🔄 Auto-Restart", "Server crashed. Restarting...", "warning")
+    if should_auto_restart(server_id):
         time.sleep(3)
-        
-        new_pid, error = run_bot(server_id, server.get('main_file', 'main.py'), server.get('requirements_file'))
-        
+        new_pid, error = run_bot(server_id, server.get('main_file', 'main.py'), 
+                                 server.get('requirements_file', 'requirements.txt'))
         if new_pid:
             users = load_users()
             for uname, data in users.items():
-                for s in data.get('servers', []):
-                    if s.get('server_id') == server_id:
+                if uname == 'admin': continue
+                servers = data.get('servers', [])
+                if not isinstance(servers, list): continue
+                for s in servers:
+                    if isinstance(s, dict) and s.get('server_id') == server_id:
                         s['status'] = 'running'
                         s['pid'] = new_pid
                         s['started_at'] = str(datetime.now())
@@ -385,8 +371,19 @@ def monitor_bot(server_id, pid):
                         s['stopped_by_user'] = False
                         save_users(users)
                         break
-            create_notification(server_id, "✅ Restarted", f"PID: {new_pid}", "success")
             threading.Thread(target=monitor_bot, args=(server_id, new_pid), daemon=True).start()
+    else:
+        users = load_users()
+        for uname, data in users.items():
+            if uname == 'admin': continue
+            servers = data.get('servers', [])
+            if not isinstance(servers, list): continue
+            for s in servers:
+                if isinstance(s, dict) and s.get('server_id') == server_id:
+                    s['status'] = 'stopped'
+                    s['pid'] = None
+                    save_users(users)
+                    return
 
 def get_process_stats(pid):
     try:
@@ -398,10 +395,27 @@ def get_process_stats(pid):
             'cpu_percent': round(cpu, 1),
             'ram_mb': round(ram, 1),
             'ram_display': f"{ram:.1f} MB" if ram < 1024 else f"{ram/1024:.1f} GB",
-            'net_in': 0, 'net_out': 0
         }
     except:
-        return {'cpu_percent': 0, 'ram_mb': 0, 'ram_display': '0 MB', 'net_in': 0, 'net_out': 0}
+        return {'cpu_percent': 0, 'ram_mb': 0, 'ram_display': '0 MB'}
+
+def get_network_stats(psutil_pid):
+    try:
+        proc = psutil.Process(psutil_pid)
+        io = proc.io_counters()
+        if io:
+            read_kb = io.read_bytes / 1024
+            write_kb = io.write_bytes / 1024
+            return format_bytes(read_kb), format_bytes(write_kb)
+    except: pass
+    return "0 KB", "0 KB"
+
+def format_bytes(kb):
+    if kb < 1024: return f"{kb:.1f} KB"
+    mb = kb / 1024
+    if mb < 1024: return f"{mb:.1f} MB"
+    gb = mb / 1024
+    return f"{gb:.2f} GB"
 
 # ============================================
 # রাউটস
@@ -429,23 +443,24 @@ def server_login(server_id):
     valid, result = check_server_valid(server_id)
     if not valid:
         return render_template('error.html', error_type=result if result else "deleted", server_link=server_id)
-    server = result
     
     if request.method == 'POST':
         username = request.form.get('username', '')
         password = request.form.get('password', '')
         users = load_users()
         for uname, data in users.items():
-            if uname != 'admin':
-                for s in data.get('servers', []):
-                    if s.get('server_id') == server_id:
-                        if username == uname and password == data.get('password'):
-                            session['user'] = uname
-                            session['role'] = 'user'
-                            session['current_server_id'] = server_id
-                            return redirect(url_for('server_home', server_id=server_id))
-                        else:
-                            return render_template('login.html', error="Invalid credentials!")
+            if uname == 'admin': continue
+            servers = data.get('servers', [])
+            if not isinstance(servers, list): continue
+            for s in servers:
+                if isinstance(s, dict) and s.get('server_id') == server_id:
+                    if username == uname and password == data.get('password'):
+                        session['user'] = uname
+                        session['role'] = 'user'
+                        session['current_server_id'] = server_id
+                        return redirect(url_for('server_home', server_id=server_id))
+                    else:
+                        return render_template('login.html', error="Invalid credentials!")
         return render_template('login.html', error="Invalid login!")
     return render_template('login.html', error=None)
 
@@ -485,15 +500,16 @@ def admin_dashboard():
     total_servers = 0
     total_running = 0
     for uname, data in users.items():
-        if uname != 'admin':
-            servers = data.get('servers', [])
-            running = sum(1 for s in servers if s.get('status') == 'running')
-            total_servers += len(servers)
-            total_running += running
-            user_list.append({
-                'username': uname, 'password': data.get('password', ''),
-                'servers': servers, 'server_count': len(servers), 'running_count': running
-            })
+        if uname == 'admin': continue
+        servers = data.get('servers', [])
+        if not isinstance(servers, list): servers = []
+        running = sum(1 for s in servers if isinstance(s, dict) and s.get('status') == 'running')
+        total_servers += len(servers)
+        total_running += running
+        user_list.append({
+            'username': uname, 'password': data.get('password', ''),
+            'servers': servers, 'server_count': len(servers), 'running_count': running
+        })
     return render_template('admin.html', users=user_list, total_servers=total_servers, total_running=total_running)
 
 @app.route('/admin/create_server', methods=['POST'])
@@ -520,8 +536,7 @@ def create_server():
     create_default_files(get_server_dir(server_id))
     
     new_server = {
-        'server_id': server_id,
-        'link': server_id,
+        'server_id': server_id, 'link': server_id,
         'login_url': f"/{server_id}/login",
         'dashboard_url': f"/{server_id}/home",
         'full_link': f"http://localhost:5000/{server_id}/home",
@@ -552,8 +567,11 @@ def set_rate_limit(server_id):
     cpu_limit = int(request.get_json().get('cpu_limit', 80))
     users = load_users()
     for uname, udata in users.items():
-        for s in udata.get('servers', []):
-            if s.get('server_id') == server_id:
+        if uname == 'admin': continue
+        servers = udata.get('servers', [])
+        if not isinstance(servers, list): continue
+        for s in servers:
+            if isinstance(s, dict) and s.get('server_id') == server_id:
                 s['cpu_limit'] = cpu_limit
                 save_users(users)
                 return jsonify({'success': True, 'cpu_limit': cpu_limit})
@@ -565,16 +583,15 @@ def delete_server(username, server_id):
         return jsonify({'error': 'Unauthorized'}), 403
     users = load_users()
     if username in users:
-        for s in users[username].get('servers', []):
-            if s.get('server_id') == server_id:
-                if s.get('pid'):
-                    stop_bot_process(s['pid'])
-                try:
-                    shutil.rmtree(get_server_dir(server_id))
-                except:
-                    pass
+        servers = users[username].get('servers', [])
+        if not isinstance(servers, list): servers = []
+        for s in servers:
+            if isinstance(s, dict) and s.get('server_id') == server_id:
+                if s.get('pid'): stop_bot_process(s['pid'])
+                try: shutil.rmtree(get_server_dir(server_id))
+                except: pass
                 break
-        users[username]['servers'] = [s for s in users[username]['servers'] if s['server_id'] != server_id]
+        users[username]['servers'] = [s for s in servers if isinstance(s, dict) and s.get('server_id') != server_id]
         if len(users[username]['servers']) == 0:
             del users[username]
         save_users(users)
@@ -586,39 +603,66 @@ def delete_server(username, server_id):
 
 @app.route('/api/run/<server_id>', methods=['POST'])
 def api_run(server_id):
-    users = load_users()
-    for uname, data in users.items():
-        for s in data.get('servers', []):
-            if s.get('server_id') == server_id:
-                if s.get('status') == 'running':
-                    return jsonify({'status': 'error', 'msg': 'Already running!'})
-                s['rate_limit_exceeded'] = False
-                s['stopped_by_user'] = False
-                pid, error = run_bot(server_id, s.get('main_file', 'main.py'), s.get('requirements_file'))
-                if pid:
+    server, _ = get_server_by_id(server_id)
+    if not server:
+        return jsonify({'status': 'error', 'msg': 'Not found'})
+    if server.get('status') == 'running':
+        return jsonify({'status': 'error', 'msg': 'Already running!'})
+    
+    server['rate_limit_exceeded'] = False
+    server['stopped_by_user'] = False
+    
+    pid, error = run_bot(server_id, server.get('main_file', 'main.py'), 
+                         server.get('requirements_file', 'requirements.txt'))
+    
+    if pid:
+        users = load_users()
+        for uname, data in users.items():
+            if uname == 'admin': continue
+            servers = data.get('servers', [])
+            if not isinstance(servers, list): continue
+            for s in servers:
+                if isinstance(s, dict) and s.get('server_id') == server_id:
                     s['status'] = 'running'
                     s['pid'] = pid
                     s['started_at'] = str(datetime.now())
                     save_users(users)
-                    threading.Thread(target=monitor_bot, args=(server_id, pid), daemon=True).start()
-                    return jsonify({'status': 'success', 'msg': 'Started!'})
-                return jsonify({'status': 'error', 'msg': error or 'Failed'})
-    return jsonify({'status': 'error', 'msg': 'Not found'})
+                    break
+        threading.Thread(target=monitor_bot, args=(server_id, pid), daemon=True).start()
+        return jsonify({'status': 'success', 'msg': 'Started!'})
+    else:
+        return jsonify({'status': 'error', 'msg': error or 'Failed'})
 
 @app.route('/api/stop/<server_id>', methods=['POST'])
 def api_stop(server_id):
+    server, _ = get_server_by_id(server_id)
+    if not server:
+        return jsonify({'status': 'error', 'msg': 'Not found'})
+    
+    if server.get('pid'):
+        stop_bot_process(server['pid'])
+    
     users = load_users()
     for uname, data in users.items():
-        for s in data.get('servers', []):
-            if s.get('server_id') == server_id:
-                if s.get('pid'):
-                    stop_bot_process(s['pid'])
+        if uname == 'admin': continue
+        servers = data.get('servers', [])
+        if not isinstance(servers, list): continue
+        for s in servers:
+            if isinstance(s, dict) and s.get('server_id') == server_id:
                 s['status'] = 'stopped'
                 s['pid'] = None
-                s['stopped_by_user'] = True  # 🔥 ইউজার নিজে বন্ধ করেছে
+                s['stopped_by_user'] = True
                 save_users(users)
-                return jsonify({'status': 'success', 'msg': 'Stopped'})
-    return jsonify({'status': 'error', 'msg': 'Not found'})
+                break
+    
+    log_file = os.path.join(get_server_dir(server_id), 'output.log')
+    try:
+        with open(log_file, 'a', encoding='utf-8') as f:
+            f.write(f"\n[{datetime.now().strftime('%I:%M:%S %p')}] 🛑 Server stopped by user\n")
+            f.write(f"[{datetime.now().strftime('%I:%M:%S %p')}] ✅ Server marked as stopped\n")
+    except: pass
+    
+    return jsonify({'status': 'success', 'msg': 'Stopped'})
 
 @app.route('/api/logs/<server_id>')
 def api_logs(server_id):
@@ -635,11 +679,8 @@ def api_clear_logs(server_id):
     log_file = os.path.join(get_server_dir(server_id), 'output.log')
     try:
         if os.path.exists(log_file):
-            try:
-                os.remove(log_file)
-            except:
-                with open(log_file, 'w', encoding='utf-8') as f:
-                    f.write('')
+            try: os.remove(log_file)
+            except: open(log_file, 'w').close()
         return jsonify({'status': 'success', 'msg': 'Cleared'})
     except:
         return jsonify({'status': 'error'}), 500
@@ -652,47 +693,87 @@ def api_command():
     log_file = os.path.join(get_server_dir(server_id), 'output.log')
     try:
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True, 
-                              cwd=get_server_dir(server_id), timeout=30)
+                              cwd=get_server_dir(server_id), timeout=30,
+                              creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0)
         output = (result.stdout + result.stderr)[:2000]
         with open(log_file, 'a', encoding='utf-8') as f:
-            f.write(f"[{datetime.now().strftime('%H:%M:%S')}] $ {cmd}\n{output}\n")
+            f.write(f"[{datetime.now().strftime('%I:%M:%S %p')}] $ {cmd}\n{output}\n")
         return jsonify({'status': 'success', 'output': output})
     except:
         return jsonify({'status': 'error', 'msg': 'Timeout'})
 
 @app.route('/api/stats/<server_id>')
 def api_stats(server_id):
+    server, _ = get_server_by_id(server_id)
+    if not server:
+        return jsonify({
+            'cpu': '0%', 'ram': '0 MB', 'uptime': '0h', 'status': 'unknown', 'cpu_limit': 80,
+            'net_in': '0 KB', 'net_out': '0 KB'
+        })
+    
+    uptime = "0h 0m"
+    cpu = "0%"
+    ram = "0 MB"
+    net_in = "0 KB"
+    net_out = "0 KB"
+    
+    if server.get('status') == 'running' and server.get('pid'):
+        stats = get_process_stats(server['pid'])
+        cpu = f"{stats['cpu_percent']}%"
+        ram = stats['ram_display']
+        net_in, net_out = get_network_stats(server['pid'])
+    
+    if server.get('status') == 'running' and server.get('started_at'):
+        try:
+            start = datetime.strptime(server['started_at'], '%Y-%m-%d %H:%M:%S.%f')
+            diff = datetime.now() - start
+            if diff.days > 0:
+                uptime = f"{diff.days}d {diff.seconds//3600}h"
+            else:
+                h = diff.seconds // 3600
+                m = (diff.seconds % 3600) // 60
+                s = diff.seconds % 60
+                uptime = f"{h}h {m}m {s}s"
+        except: pass
+    
+    return jsonify({
+        'cpu': cpu, 'ram': ram, 'uptime': uptime,
+        'net_in': net_in, 'net_out': net_out,
+        'cpu_limit': server.get('cpu_limit', 80),
+        'status': server.get('status', 'stopped')
+    })
+
+# ============================================
+# 🔑 পাসওয়ার্ড চেঞ্জ API
+# ============================================
+
+@app.route('/api/change_password/<server_id>', methods=['POST'])
+def api_change_password(server_id):
+    if 'user' not in session:
+        return jsonify({'error': 'Please login first!'}), 403
+    
+    data = request.get_json()
+    current_password = data.get('current_password', '')
+    new_password = data.get('new_password', '')
+    
+    if not current_password or not new_password:
+        return jsonify({'error': 'All fields are required!'})
+    
+    if len(new_password) < 4:
+        return jsonify({'error': 'Password must be at least 4 characters!'})
+    
     users = load_users()
-    for uname, data in users.items():
-        for s in data.get('servers', []):
-            if s.get('server_id') == server_id:
-                uptime = "0h 0m"
-                cpu = "0%"
-                ram = "0 MB"
-                if s.get('status') == 'running' and s.get('pid'):
-                    stats = get_process_stats(s['pid'])
-                    cpu = f"{stats['cpu_percent']}%"
-                    ram = stats['ram_display']
-                if s.get('status') == 'running' and s.get('started_at'):
-                    try:
-                        start = datetime.strptime(s['started_at'], '%Y-%m-%d %H:%M:%S.%f')
-                        diff = datetime.now() - start
-                        if diff.days > 0:
-                            uptime = f"{diff.days}d {diff.seconds//3600}h"
-                        else:
-                            h = diff.seconds // 3600
-                            m = (diff.seconds % 3600) // 60
-                            s = diff.seconds % 60
-                            uptime = f"{h}h {m}m {s}s"
-                    except:
-                        pass
-                return jsonify({
-                    'cpu': cpu, 'ram': ram, 'uptime': uptime,
-                    'net_in': '0 KB', 'net_out': '0 KB',
-                    'cpu_limit': s.get('cpu_limit', 80),
-                    'status': s.get('status', 'stopped')
-                })
-    return jsonify({'cpu': '0%', 'ram': '0 MB', 'uptime': '0h', 'net_in': '0 KB', 'net_out': '0 KB', 'status': 'unknown'})
+    username = session.get('user')
+    
+    if username in users:
+        if users[username].get('password') == current_password:
+            users[username]['password'] = new_password
+            save_users(users)
+            return jsonify({'success': True, 'msg': 'Password changed successfully!'})
+        else:
+            return jsonify({'error': 'Current password is incorrect!'})
+    
+    return jsonify({'error': 'User not found!'}), 404
 
 # ============================================
 # ফাইল API
@@ -730,10 +811,8 @@ def api_save_file(server_id):
 def api_delete_file(server_id):
     filepath = os.path.join(get_server_dir(server_id), request.get_json().get('filename', ''))
     if os.path.exists(filepath):
-        if os.path.isdir(filepath):
-            shutil.rmtree(filepath)
-        else:
-            os.remove(filepath)
+        if os.path.isdir(filepath): shutil.rmtree(filepath)
+        else: os.remove(filepath)
     return jsonify({'success': True})
 
 @app.route('/api/upload/<server_id>', methods=['POST'])
@@ -769,14 +848,12 @@ def api_unzip(server_id):
 
 @app.route('/api/get_startup/<server_id>')
 def api_get_startup(server_id):
-    users = load_users()
-    for uname, data in users.items():
-        for s in data.get('servers', []):
-            if s.get('server_id') == server_id:
-                return jsonify({
-                    'main_file': s.get('main_file', 'main.py'),
-                    'requirements_file': s.get('requirements_file', 'requirements.txt')
-                })
+    server, _ = get_server_by_id(server_id)
+    if server:
+        return jsonify({
+            'main_file': server.get('main_file', 'main.py'),
+            'requirements_file': server.get('requirements_file', 'requirements.txt')
+        })
     return jsonify({'main_file': 'main.py', 'requirements_file': 'requirements.txt'})
 
 @app.route('/api/set_startup/<server_id>', methods=['POST'])
@@ -784,8 +861,11 @@ def api_set_startup(server_id):
     d = request.get_json()
     users = load_users()
     for uname, udata in users.items():
-        for s in udata.get('servers', []):
-            if s.get('server_id') == server_id:
+        if uname == 'admin': continue
+        servers = udata.get('servers', [])
+        if not isinstance(servers, list): continue
+        for s in servers:
+            if isinstance(s, dict) and s.get('server_id') == server_id:
                 s['main_file'] = d.get('main_file', 'main.py')
                 s['requirements_file'] = d.get('requirements_file')
                 save_users(users)
@@ -797,11 +877,16 @@ def api_set_startup(server_id):
 # ============================================
 
 if __name__ == '__main__':
-    print("\n" + "=" * 60)
-    print("🚀 JUBAYER HOSTING - FINAL EMOJI SUPPORT")
-    print("=" * 60)
-    print("📍 http://localhost:5000/login (Admin)")
-    print("🔗 http://localhost:5000/{id}/login (User)")
-    print("👤 admin / admin123")
-    print("=" * 60 + "\n")
+    print("\n" + "=" * 50)
+    print("🚀 JUBAYER HOSTING - FINAL")
+    print("=" * 50)
+    print("Admin: http://localhost:5000/login")
+    print("User: http://localhost:5000/{id}/login")
+    print("=" * 50)
+    print("✅ Requirements.txt install")
+    print("✅ Stop message in console")
+    print("✅ Network stats real-time")
+    print("✅ Auto-restart crash only")
+    print("🔑 Password change API")
+    print("=" * 50 + "\n")
     app.run(debug=True, host='0.0.0.0', port=5000)
