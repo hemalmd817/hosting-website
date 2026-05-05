@@ -81,6 +81,7 @@
             <button onclick="showTab('console')" id="tab-console" class="pb-2 px-1 text-sm tab-active"><i class="fas fa-terminal mr-1"></i>Console</button>
             <button onclick="showTab('files')" id="tab-files" class="pb-2 px-1 text-sm text-gray-400"><i class="fas fa-folder mr-1"></i>Files</button>
             <button onclick="showTab('startup')" id="tab-startup" class="pb-2 px-1 text-sm text-gray-400"><i class="fas fa-rocket mr-1"></i>Startup</button>
+            <button onclick="showTab('credentials')" id="tab-credentials" class="pb-2 px-1 text-sm text-gray-400"><i class="fas fa-key mr-1"></i>Credentials</button>
         </div>
 
         <div id="console-tab">
@@ -94,7 +95,7 @@
             <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mt-4">
                 <div class="stat-card">
                     <p class="text-[10px] text-gray-500 mb-1"><i class="fas fa-link mr-1"></i>ADDRESS</p>
-                    <p class="text-xs text-blue-400 truncate">{{ current_server.full_link[:25] }}...</p>
+                    <p class="text-xs text-blue-400 font-mono truncate" id="serverAddr" title="Click to copy"></p>
                 </div>
                 <div class="stat-card">
                     <p class="text-[10px] text-gray-500 mb-1"><i class="fas fa-microchip mr-1"></i>CPU</p>
@@ -150,6 +151,26 @@
                 <button onclick="saveStartup()" class="bg-blue-600 hover:bg-blue-500 px-5 py-2 rounded-lg text-sm font-bold"><i class="fas fa-save mr-1"></i> Save</button>
             </div>
         </div>
+
+        <!-- 🔑 New Credentials Tab -->
+        <div id="credentials-tab" class="hidden">
+            <div class="bg-[#12141c] rounded-xl border border-gray-800 p-5">
+                <h3 class="text-md font-bold mb-4 text-blue-400"><i class="fas fa-key mr-2"></i>Change Password</h3>
+                <div class="mb-4">
+                    <label class="block text-gray-400 text-sm mb-1">Current Password</label>
+                    <input type="password" id="currentPassword" class="w-full bg-[#0c0e14] border border-gray-700 rounded-lg px-3 py-2 text-sm text-white" placeholder="Enter current password">
+                </div>
+                <div class="mb-4">
+                    <label class="block text-gray-400 text-sm mb-1">New Password</label>
+                    <input type="password" id="newPassword" class="w-full bg-[#0c0e14] border border-gray-700 rounded-lg px-3 py-2 text-sm text-white" placeholder="Enter new password">
+                </div>
+                <div class="mb-4">
+                    <label class="block text-gray-400 text-sm mb-1">Confirm New Password</label>
+                    <input type="password" id="confirmPassword" class="w-full bg-[#0c0e14] border border-gray-700 rounded-lg px-3 py-2 text-sm text-white" placeholder="Confirm new password">
+                </div>
+                <button onclick="changePassword()" class="bg-blue-600 hover:bg-blue-500 px-5 py-2 rounded-lg text-sm font-bold"><i class="fas fa-lock mr-1"></i> Change Password</button>
+            </div>
+        </div>
         
         {% else %}
         <div class="text-center text-gray-500 py-20"><i class="fas fa-server text-6xl mb-4 opacity-30"></i><p>No server found.</p></div>
@@ -169,6 +190,9 @@
         let editingFile = null;
         let activeTab = 'console';
         let activeToast = null;
+
+        // 🔥 Set real address on load
+        document.getElementById('serverAddr').innerText = window.location.href;
 
         function showToast(message, type='info', duration=4000) {
             const container = document.getElementById('toastContainer');
@@ -227,7 +251,8 @@
             document.getElementById('console-tab').classList.toggle('hidden', tab!=='console');
             document.getElementById('files-tab').classList.toggle('hidden', tab!=='files');
             document.getElementById('startup-tab').classList.toggle('hidden', tab!=='startup');
-            ['console','files','startup'].forEach(t => {
+            document.getElementById('credentials-tab').classList.toggle('hidden', tab!=='credentials');
+            ['console','files','startup','credentials'].forEach(t => {
                 const btn = document.getElementById(`tab-${t}`);
                 if(btn) btn.className = tab===t ? 'pb-2 px-1 text-sm tab-active' : 'pb-2 px-1 text-sm text-gray-400';
             });
@@ -312,7 +337,7 @@
                 let h = '<table class="w-full text-sm"><tbody>';
                 data.files.forEach(f => {
                     let icon = f.is_dir ? '<i class="fas fa-folder text-yellow-500 mr-2"></i>' : '<i class="fas fa-file-code text-blue-400 mr-2"></i>';
-                    h += `<tr class="border-b border-gray-800 hover:bg-[#1a1d27]"><td class="p-3">${icon}${f.name}</td><td class="p-3 text-gray-400 text-xs">${f.is_dir?'-':(f.size/1024).toFixed(1)+' KB'}</td><td class="p-3 text-gray-500 text-xs">${f.modified}</td><td class="p-3 text-right">${!f.is_dir?`<button onclick="editFile('${f.name}')" class="text-blue-400 mr-2"><i class="fas fa-edit"></i></button>`:''}<button onclick="deleteFile('${f.name}')" class="text-red-400"><i class="fas fa-trash"></i></button></td></tr>`;
+                    h += `<tr class="border-b border-gray-800 hover:bg-[#1a1d27]"><td class="p-3">${icon}${f.name}</td><td class="p-3 text-gray-400 text-xs">${f.is_dir?'-':(f.size/1024).toFixed(1)+' KB'}</td><td class="p-3 text-gray-500 text-xs">${f.modified}</td><td class="p-3 text-right">${!f.is_dir?`<button onclick="editFile('${f.name}')" class="text-blue-400 mr-2"><i class="fas fa-edit"></i></button>`:''}<button onclick="renameFilePrompt('${f.name}')" class="text-yellow-400 mr-2"><i class="fas fa-i-cursor"></i></button><button onclick="deleteFile('${f.name}')" class="text-red-400"><i class="fas fa-trash"></i></button></td></tr>`;
                 });
                 h += '</tbody></table>';
                 document.getElementById('fileList').innerHTML = h;
@@ -332,6 +357,21 @@
 
         function createFolder() { const n = prompt('Folder name:'); if(n) fetch(`/api/create_folder/${currentServerId}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({foldername:n})}).then(()=>loadFileList()); }
         function createFile() { const n = prompt('File name:','newfile.py'); if(n) fetch(`/api/file/${currentServerId}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({filename:n, content:'# New file'})}).then(()=>loadFileList()); }
+        
+        // 🔥 Rename function
+        function renameFilePrompt(oldName) {
+            const newName = prompt('Enter new name:', oldName);
+            if(newName && newName !== oldName) {
+                fetch(`/api/rename/${currentServerId}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({old_name: oldName, new_name: newName})}).then(r=>r.json()).then(data => {
+                    if(data.success) {
+                        showToast('Renamed!', 'success', 2000);
+                        loadFileList();
+                    } else {
+                        showToast(data.error || 'Failed!', 'error', 3000);
+                    }
+                });
+            }
+        }
         
         function editFile(filename) {
             editingFile = filename;
@@ -361,6 +401,48 @@
         
         function saveStartup() {
             fetch(`/api/set_startup/${currentServerId}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({main_file:document.getElementById('mainFileInput').value.trim(), requirements_file:document.getElementById('requirementsInput').value.trim()||null})}).then(()=>showToast('Saved!','success',2000));
+        }
+
+        // 🔥 Password Change Function
+        function changePassword() {
+            const current = document.getElementById('currentPassword').value;
+            const newPass = document.getElementById('newPassword').value;
+            const confirm = document.getElementById('confirmPassword').value;
+            
+            if(!current || !newPass || !confirm) {
+                showToast('Please fill all fields!', 'error', 3000);
+                return;
+            }
+            
+            if(newPass !== confirm) {
+                showToast('Passwords do not match!', 'error', 3000);
+                return;
+            }
+            
+            if(newPass.length < 4) {
+                showToast('Password must be at least 4 characters!', 'error', 3000);
+                return;
+            }
+            
+            showToast('Changing password...', 'info', 0);
+            
+            fetch(`/api/change_password/${currentServerId}`, {
+                method:'POST',
+                headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({current_password: current, new_password: newPass})
+            })
+            .then(r=>r.json())
+            .then(data => {
+                if(data.success) {
+                    showToast('Password changed!', 'success', 3000);
+                    document.getElementById('currentPassword').value = '';
+                    document.getElementById('newPassword').value = '';
+                    document.getElementById('confirmPassword').value = '';
+                } else {
+                    showToast(data.error || 'Failed!', 'error', 4000);
+                }
+            })
+            .catch(() => showToast('Connection failed!', 'error', 4000));
         }
 
         loadLogs(); updateStats();
