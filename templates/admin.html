@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin | JUBAYER HOSTING</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body class="bg-[#0a0c12] text-white">
+
+    <header class="bg-[#0e1018] border-b border-blue-900/30 px-6 py-4 flex justify-between items-center sticky top-0 z-10">
+        <div class="flex items-center gap-3">
+            <div class="w-10 h-10 bg-gradient-to-tr from-blue-600 to-blue-400 rounded-xl flex items-center justify-center">
+                <i class="fas fa-cloud-upload-alt text-white"></i>
+            </div>
+            <h1 class="text-xl font-bold">JUBAYER <span class="text-blue-400">HOSTING</span> | Admin Panel</h1>
+        </div>
+        <div class="flex items-center gap-4">
+            <span class="text-sm text-gray-400"><i class="fas fa-user-shield"></i> admin</span>
+            <a href="/logout" class="text-red-400 hover:text-red-300 transition">
+                <i class="fas fa-sign-out-alt"></i> Logout
+            </a>
+        </div>
+    </header>
+
+    <div class="container mx-auto p-6">
+        <!-- Stats Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-5 mb-8">
+            <div class="bg-[#12141c] rounded-xl border border-blue-500/20 p-5">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-gray-400 text-sm">Total Users</p>
+                        <p class="text-3xl font-bold">{{ users|length }}</p>
+                    </div>
+                    <i class="fas fa-users text-3xl text-blue-400/50"></i>
+                </div>
+            </div>
+            <div class="bg-[#12141c] rounded-xl border border-green-500/20 p-5">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-gray-400 text-sm">Total Servers</p>
+                        <p class="text-3xl font-bold">{{ total_servers }}</p>
+                    </div>
+                    <i class="fas fa-server text-3xl text-green-400/50"></i>
+                </div>
+            </div>
+            <div class="bg-[#12141c] rounded-xl border border-yellow-500/20 p-5">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-gray-400 text-sm">Running</p>
+                        <p class="text-3xl font-bold">{{ total_running }}</p>
+                    </div>
+                    <i class="fas fa-play-circle text-3xl text-yellow-400/50"></i>
+                </div>
+            </div>
+            <div class="bg-[#12141c] rounded-xl border border-purple-500/20 p-5">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-gray-400 text-sm">Stopped</p>
+                        <p class="text-3xl font-bold">{{ total_servers - total_running }}</p>
+                    </div>
+                    <i class="fas fa-stop-circle text-3xl text-purple-400/50"></i>
+                </div>
+            </div>
+        </div>
+
+        <!-- Create Server Form -->
+        <div class="bg-[#12141c] rounded-xl border border-blue-500/20 p-6 mb-8">
+            <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
+                <i class="fas fa-plus-circle text-blue-400"></i> Create New Server
+            </h2>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4" id="createForm">
+                <input type="text" id="newUsername" placeholder="Username" class="bg-[#0c0e14] border border-gray-700 rounded-lg px-4 py-2 text-white focus:border-blue-500 outline-none">
+                <input type="text" id="newPassword" placeholder="Password" class="bg-[#0c0e14] border border-gray-700 rounded-lg px-4 py-2 text-white focus:border-blue-500 outline-none">
+                <select id="serverType" class="bg-[#0c0e14] border border-gray-700 rounded-lg px-4 py-2 text-white focus:border-blue-500 outline-none">
+                    <option value="python">Python Bot</option>
+                    <option value="node">Node.js</option>
+                    <option value="static">Static Website</option>
+                </select>
+                <input type="text" id="ram" placeholder="RAM (e.g., 512MB)" class="bg-[#0c0e14] border border-gray-700 rounded-lg px-4 py-2 text-white focus:border-blue-500 outline-none">
+                <input type="text" id="disk" placeholder="Disk (e.g., 1GB)" class="bg-[#0c0e14] border border-gray-700 rounded-lg px-4 py-2 text-white focus:border-blue-500 outline-none">
+                <input type="number" id="expiryDays" placeholder="Expiry (days)" value="30" class="bg-[#0c0e14] border border-gray-700 rounded-lg px-4 py-2 text-white focus:border-blue-500 outline-none">
+            </div>
+            <button onclick="createServer()" class="mt-4 bg-blue-600 hover:bg-blue-500 px-6 py-2 rounded-lg font-bold transition flex items-center gap-2">
+                <i class="fas fa-check"></i> Create Server
+            </button>
+        </div>
+
+        <!-- Users List -->
+        <div class="bg-[#12141c] rounded-xl border border-blue-500/20 overflow-hidden">
+            <div class="p-5 border-b border-gray-800">
+                <h2 class="text-xl font-bold"><i class="fas fa-list"></i> User & Server List</h2>
+                <p class="text-gray-500 text-xs mt-1">Each user gets a unique login link</p>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full">
+                    <thead class="bg-[#0c0e14]">
+                        <tr class="text-left text-gray-400 text-sm">
+                            <th class="p-4">Username</th>
+                            <th class="p-4">Password</th>
+                            <th class="p-4">Server Link</th>
+                            <th class="p-4">Type/RAM/Disk</th>
+                            <th class="p-4">Status</th>
+                            <th class="p-4">Expiry</th>
+                            <th class="p-4">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for user in users %}
+                            {% for server in user.servers %}
+                            <tr class="border-b border-gray-800 hover:bg-[#1a1d27]">
+                                <td class="p-4 font-mono">{{ user.username }}</td>
+                                <td class="p-4 text-gray-400">{{ user.password }}</td>
+                                <td class="p-4">
+                                    <a href="{{ server.login_url }}" target="_blank" class="text-blue-400 hover:text-blue-300 text-sm">
+                                        {{ server.link }}
+                                    </a>
+                                </td>
+                                <td class="p-4 text-xs">
+                                    {{ server.type }} | {{ server.ram }} | {{ server.disk }}
+                                </td>
+                                <td class="p-4">
+                                    <span class="px-2 py-1 rounded-full text-xs {% if server.status == 'running' %}bg-green-500/20 text-green-400{% else %}bg-red-500/20 text-red-400{% endif %}">
+                                        {{ server.status }}
+                                    </span>
+                                </td>
+                                <td class="p-4 text-yellow-400 text-xs">{{ server.expiry[:10] }}</td>
+                                <td class="p-4 space-x-2">
+                                    <button onclick="deleteServer('{{ user.username }}', '{{ server.server_id }}')" class="text-red-400 hover:text-red-300">
+                                        <i class="fas fa-trash"></i>
+                                    </button>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function createServer() {
+            const data = {
+                username: document.getElementById('newUsername').value,
+                password: document.getElementById('newPassword').value,
+                server_type: document.getElementById('serverType').value,
+                ram: document.getElementById('ram').value,
+                disk: document.getElementById('disk').value,
+                expiry_days: document.getElementById('expiryDays').value
+            };
+            
+            if(!data.username || !data.password) {
+                Swal.fire('Error', 'Username and password required', 'error');
+                return;
+            }
+            
+            fetch('/admin/create_server', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(data)
+            }).then(res => res.json()).then(data => {
+                if(data.success) {
+                    Swal.fire({
+                        title: 'Server Created!',
+                        html: `<strong>Username:</strong> ${data.username}<br>
+                               <strong>Password:</strong> ${data.password}<br>
+                               <strong>Login URL:</strong> <a href="${data.login_url}" target="_blank">${data.login_url}</a><br>
+                               <strong>Host:</strong> ${data.hostname}`,
+                        icon: 'success',
+                        background: '#12141c',
+                        color: '#fff'
+                    });
+                    setTimeout(() => location.reload(), 3000);
+                }
+            }).catch(err => {
+                Swal.fire('Error', 'Something went wrong', 'error');
+            });
+        }
+        
+        function deleteServer(username, serverId) {
+            Swal.fire({
+                title: 'Confirm?',
+                text: `Delete this server?`,
+                icon: 'warning',
+                background: '#12141c',
+                color: '#fff',
+                showCancelButton: true,
+                confirmButtonColor: '#e53e3e'
+            }).then((result) => {
+                if(result.isConfirmed) {
+                    fetch(`/admin/delete_server/${username}/${serverId}`, {method: 'POST'})
+                        .then(() => location.reload());
+                }
+            });
+        }
+    </script>
+</body>
+</html>
