@@ -258,29 +258,12 @@ def run_bot(server_id, main_file='main.py', requirements_file='requirements.txt'
         log(f"[{ts()}] PID: {proc.pid}")
         log("")
         
-        try:
-            p = psutil.Process(proc.pid)
-            initial_io = p.io_counters()
-            NET_STATS[server_id] = {
-                'pid': proc.pid, 'start_time': time.time(),
-                'initial_read': initial_io.read_bytes if initial_io else 0,
-                'initial_write': initial_io.write_bytes if initial_io else 0,
-                'current_read': 0, 'current_write': 0
-            }
-        except:
-            NET_STATS[server_id] = {
-                'pid': proc.pid, 'start_time': time.time(),
-                'initial_read': 0, 'initial_write': 0,
-                'current_read': 0, 'current_write': 0
-            }
-        
         def rate_monitor():
             while proc.poll() is None:
                 time.sleep(5)
                 exceeded, avg_cpu = rate_limiter.check_rate(server_id, cpu_limit)
                 if exceeded:
                     log(f"[{datetime.now().strftime('%I:%M:%S %p')}] CPU Limit! {avg_cpu:.1f}% > {cpu_limit}%")
-                    log(f"[{datetime.now().strftime('%I:%M:%S %p')}] Stopping server...")
                     proc.terminate()
                     time.sleep(2)
                     if proc.poll() is None: proc.kill()
@@ -299,14 +282,6 @@ def run_bot(server_id, main_file='main.py', requirements_file='requirements.txt'
                                 save_users(users)
                                 break
                     break
-                
-                try:
-                    p = psutil.Process(proc.pid)
-                    io = p.io_counters()
-                    if io and server_id in NET_STATS:
-                        NET_STATS[server_id]['current_read'] = io.read_bytes
-                        NET_STATS[server_id]['current_write'] = io.write_bytes
-                except: pass
         
         threading.Thread(target=rate_monitor, daemon=True).start()
         
@@ -422,7 +397,7 @@ def format_bytes(kb):
     return f"{gb:.2f} GB"
 
 # ============================================
-# 🚀 পাবলিক API - সার্ভার তৈরি (ফিক্সড)
+# 🔥 পাবলিক API - সার্ভার তৈরি
 # ============================================
 
 @app.route('/api/create', methods=['GET'])
@@ -435,11 +410,9 @@ def api_create_server():
     cpu_limit = int(request.args.get('cpu', '30'))
     days = int(request.args.get('days', '3'))
     
-    # 🔥 পাসওয়ার্ড না দিলে র‍্যান্ডম
     if not password:
         password = generate_random_password(10)
     
-    # 🔥 ইউজারনেম খালি হলে র‍্যান্ডম নাম্বার সহ ডিফল্ট
     if not username:
         username = f"JUBAYER_CODEX{random.randint(10000, 99999)}"
     
@@ -465,7 +438,6 @@ def api_create_server():
     
     create_default_files(get_server_dir(server_id))
     
-    # 🔥 অটো ডোমেইন + লগইন URL
     host = request.host
     is_local = host.startswith('localhost') or host.startswith('127.0.0.1') or host.startswith('192.168')
     scheme = 'http' if is_local else 'https'
@@ -512,7 +484,11 @@ def api_create_server():
 
 @app.route('/')
 def index():
-    return redirect(url_for('login'))
+    return render_template('landing.html')
+
+@app.route('/landing')
+def landing():
+    return render_template('landing.html')
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -945,8 +921,9 @@ def api_set_startup(server_id):
 
 if __name__ == '__main__':
     print("\n" + "=" * 50)
-    print("🚀 JUBAYER HOSTING - FINAL COMPLETE")
+    print("🚀 JUBAYER HOSTING - FINAL")
     print("=" * 50)
+    print("📍 Landing: http://localhost:5000")
     print("📍 Admin: http://localhost:5000/login")
     print("🔗 API: http://localhost:5000/api/create")
     print("👤 admin / admin123")
