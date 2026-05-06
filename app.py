@@ -494,7 +494,7 @@ def api_create_server():
     return jsonify({
         'status': 'success',
         'message': 'Panel created successfully!',
-        'username': username,
+        'usernamed': username,
         'password': password,
         'server_type': server_type,
         'ram': ram,
