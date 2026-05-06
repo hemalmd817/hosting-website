@@ -15,7 +15,7 @@ import psutil
 
 app = Flask(__name__)
 app.secret_key = 'jubayer-super-secret-key-2026'
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max upload
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 
 USERS_FILE = 'users.json'
 BOTS_DIR = 'bots'
@@ -83,6 +83,10 @@ def should_auto_restart(server_id):
 # ============================================
 # হেল্পার
 # ============================================
+
+def generate_random_password(length=10):
+    chars = string.ascii_letters + string.digits
+    return ''.join(random.choices(chars, k=length))
 
 def load_users():
     if not os.path.exists(USERS_FILE):
@@ -276,7 +280,7 @@ def run_bot(server_id, main_file='main.py', requirements_file='requirements.txt'
                 exceeded, avg_cpu = rate_limiter.check_rate(server_id, cpu_limit)
                 if exceeded:
                     log(f"[{datetime.now().strftime('%I:%M:%S %p')}] CPU Limit! {avg_cpu:.1f}% > {cpu_limit}%")
-                    log(f"[{datetime.now().strftime('%I:%M:%S %p')}] Stopping server due to rate limit...")
+                    log(f"[{datetime.now().strftime('%I:%M:%S %p')}] Stopping server...")
                     proc.terminate()
                     time.sleep(2)
                     if proc.poll() is None: proc.kill()
@@ -418,6 +422,91 @@ def format_bytes(kb):
     return f"{gb:.2f} GB"
 
 # ============================================
+# 🚀 পাবলিক API - সার্ভার তৈরি (ফিক্সড)
+# ============================================
+
+@app.route('/api/create', methods=['GET'])
+def api_create_server():
+    username = request.args.get('username', '').strip()
+    password = request.args.get('password', '').strip()
+    server_type = request.args.get('type', 'python').strip()
+    ram = request.args.get('ram', '1GB').strip()
+    disk = request.args.get('disk', '1GB').strip()
+    cpu_limit = int(request.args.get('cpu', '30'))
+    days = int(request.args.get('days', '3'))
+    
+    # 🔥 পাসওয়ার্ড না দিলে র‍্যান্ডম
+    if not password:
+        password = generate_random_password(10)
+    
+    # 🔥 ইউজারনেম খালি হলে র‍্যান্ডম নাম্বার সহ ডিফল্ট
+    if not username:
+        username = f"JUBAYER_CODEX{random.randint(10000, 99999)}"
+    
+    if len(username) < 3:
+        return jsonify({'status': 'error', 'message': 'Username must be at least 3 characters!'}), 400
+    
+    if len(password) < 4:
+        return jsonify({'status': 'error', 'message': 'Password must be at least 4 characters!'}), 400
+    
+    if cpu_limit < 10 or cpu_limit > 100:
+        return jsonify({'status': 'error', 'message': 'CPU limit must be between 10 and 100!'}), 400
+    
+    if days < 1 or days > 365:
+        return jsonify({'status': 'error', 'message': 'Days must be between 1 and 365!'}), 400
+    
+    users = load_users()
+    
+    if username in users:
+        return jsonify({'status': 'error', 'message': f"Username '{username}' already exists!"}), 400
+    
+    server_id = str(uuid.uuid4())[:8]
+    expiry_date = datetime.now() + timedelta(days=days)
+    
+    create_default_files(get_server_dir(server_id))
+    
+    # 🔥 অটো ডোমেইন + লগইন URL
+    host = request.host
+    is_local = host.startswith('localhost') or host.startswith('127.0.0.1') or host.startswith('192.168')
+    scheme = 'http' if is_local else 'https'
+    full_url = f"{scheme}://{host}/{server_id}/login"
+    
+    new_server = {
+        'server_id': server_id,
+        'login_url': f"/{server_id}/login",
+        'dashboard_url': f"/{server_id}/home",
+        'full_link': full_url,
+        'type': server_type,
+        'ram': ram, 'disk': disk,
+        'status': 'stopped', 'pid': None,
+        'created': str(datetime.now()),
+        'expiry': str(expiry_date),
+        'main_file': 'main.py',
+        'requirements_file': 'requirements.txt',
+        'cpu_limit': cpu_limit,
+        'rate_limit_exceeded': False,
+        'stopped_by_user': False
+    }
+    
+    users[username] = {'password': password, 'role': 'user', 'servers': [new_server]}
+    save_users(users)
+    
+    return jsonify({
+        'status': 'success',
+        'message': 'Panel created successfully!',
+        'username': username,
+        'password': password,
+        'server_type': server_type,
+        'ram': ram,
+        'disk': disk,
+        'cpu_limit': cpu_limit,
+        'validity': f'{days} days',
+        'expiry_date': expiry_date.strftime('%Y-%m-%d'),
+        'full_url': full_url,
+        'server_id': server_id
+    }), 200
+
+# ============================================
 # রাউটস
 # ============================================
 
@@ -539,7 +628,7 @@ def create_server():
         'server_id': server_id, 'link': server_id,
         'login_url': f"/{server_id}/login",
         'dashboard_url': f"/{server_id}/home",
-        'full_link': f"http://localhost:5000/{server_id}/home",
+        'full_link': request.host_url.rstrip('/') + f"/{server_id}/home",
         'type': server_type, 'ram': ram, 'disk': disk,
         'status': 'stopped', 'pid': None,
         'created': str(datetime.now()), 'expiry': str(expiry_date),
@@ -556,7 +645,7 @@ def create_server():
     return jsonify({
         'success': True, 'username': username, 'password': password,
         'login_url': new_server['login_url'],
-        'hostname': f"http://localhost:5000/{server_id}/home",
+        'hostname': new_server['full_link'],
         'server_id': server_id
     })
 
@@ -604,16 +693,13 @@ def delete_server(username, server_id):
 @app.route('/api/run/<server_id>', methods=['POST'])
 def api_run(server_id):
     server, _ = get_server_by_id(server_id)
-    if not server:
-        return jsonify({'status': 'error', 'msg': 'Not found'})
-    if server.get('status') == 'running':
-        return jsonify({'status': 'error', 'msg': 'Already running!'})
+    if not server: return jsonify({'status': 'error', 'msg': 'Not found'})
+    if server.get('status') == 'running': return jsonify({'status': 'error', 'msg': 'Already running!'})
     
     server['rate_limit_exceeded'] = False
     server['stopped_by_user'] = False
     
-    pid, error = run_bot(server_id, server.get('main_file', 'main.py'), 
-                         server.get('requirements_file', 'requirements.txt'))
+    pid, error = run_bot(server_id, server.get('main_file', 'main.py'), server.get('requirements_file', 'requirements.txt'))
     
     if pid:
         users = load_users()
@@ -630,17 +716,14 @@ def api_run(server_id):
                     break
         threading.Thread(target=monitor_bot, args=(server_id, pid), daemon=True).start()
         return jsonify({'status': 'success', 'msg': 'Started!'})
-    else:
-        return jsonify({'status': 'error', 'msg': error or 'Failed'})
+    return jsonify({'status': 'error', 'msg': error or 'Failed'})
 
 @app.route('/api/stop/<server_id>', methods=['POST'])
 def api_stop(server_id):
     server, _ = get_server_by_id(server_id)
-    if not server:
-        return jsonify({'status': 'error', 'msg': 'Not found'})
+    if not server: return jsonify({'status': 'error', 'msg': 'Not found'})
     
-    if server.get('pid'):
-        stop_bot_process(server['pid'])
+    if server.get('pid'): stop_bot_process(server['pid'])
     
     users = load_users()
     for uname, data in users.items():
@@ -667,10 +750,8 @@ def api_stop(server_id):
 def api_logs(server_id):
     log_file = os.path.join(get_server_dir(server_id), 'output.log')
     if os.path.exists(log_file):
-        with open(log_file, 'r', encoding='utf-8') as f:
-            logs = f.read()
-    else:
-        logs = ""
+        with open(log_file, 'r', encoding='utf-8') as f: logs = f.read()
+    else: logs = ""
     return jsonify({'logs': logs})
 
 @app.route('/api/clear_logs/<server_id>', methods=['POST'])
@@ -681,8 +762,7 @@ def api_clear_logs(server_id):
             try: os.remove(log_file)
             except: open(log_file, 'w').close()
         return jsonify({'status': 'success', 'msg': 'Cleared'})
-    except:
-        return jsonify({'status': 'error'}), 500
+    except: return jsonify({'status': 'error'}), 500
 
 @app.route('/api/command', methods=['POST'])
 def api_command():
@@ -691,30 +771,21 @@ def api_command():
     server_id = data.get('server_id', '')
     log_file = os.path.join(get_server_dir(server_id), 'output.log')
     try:
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, 
-                              cwd=get_server_dir(server_id), timeout=30,
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=get_server_dir(server_id), timeout=30,
                               creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0)
         output = (result.stdout + result.stderr)[:2000]
         with open(log_file, 'a', encoding='utf-8') as f:
             f.write(f"[{datetime.now().strftime('%I:%M:%S %p')}] $ {cmd}\n{output}\n")
         return jsonify({'status': 'success', 'output': output})
-    except:
-        return jsonify({'status': 'error', 'msg': 'Timeout'})
+    except: return jsonify({'status': 'error', 'msg': 'Timeout'})
 
 @app.route('/api/stats/<server_id>')
 def api_stats(server_id):
     server, _ = get_server_by_id(server_id)
     if not server:
-        return jsonify({
-            'cpu': '0%', 'ram': '0 MB', 'uptime': '0h', 'status': 'unknown', 'cpu_limit': 80,
-            'net_in': '0 KB', 'net_out': '0 KB'
-        })
+        return jsonify({'cpu': '0%', 'ram': '0 MB', 'uptime': '0h', 'status': 'unknown', 'cpu_limit': 80, 'net_in': '0 KB', 'net_out': '0 KB'})
     
-    uptime = "0h 0m"
-    cpu = "0%"
-    ram = "0 MB"
-    net_in = "0 KB"
-    net_out = "0 KB"
+    uptime, cpu, ram, net_in, net_out = "0h 0m", "0%", "0 MB", "0 KB", "0 KB"
     
     if server.get('status') == 'running' and server.get('pid'):
         stats = get_process_stats(server['pid'])
@@ -726,40 +797,27 @@ def api_stats(server_id):
         try:
             start = datetime.strptime(server['started_at'], '%Y-%m-%d %H:%M:%S.%f')
             diff = datetime.now() - start
-            if diff.days > 0:
-                uptime = f"{diff.days}d {diff.seconds//3600}h"
+            if diff.days > 0: uptime = f"{diff.days}d {diff.seconds//3600}h"
             else:
-                h = diff.seconds // 3600
-                m = (diff.seconds % 3600) // 60
-                s = diff.seconds % 60
+                h, m, s = diff.seconds // 3600, (diff.seconds % 3600) // 60, diff.seconds % 60
                 uptime = f"{h}h {m}m {s}s"
         except: pass
     
-    return jsonify({
-        'cpu': cpu, 'ram': ram, 'uptime': uptime,
-        'net_in': net_in, 'net_out': net_out,
-        'cpu_limit': server.get('cpu_limit', 80),
-        'status': server.get('status', 'stopped')
-    })
+    return jsonify({'cpu': cpu, 'ram': ram, 'uptime': uptime, 'net_in': net_in, 'net_out': net_out, 'cpu_limit': server.get('cpu_limit', 80), 'status': server.get('status', 'stopped')})
 
 # ============================================
-# পাসওয়ার্ড চেঞ্জ API
+# পাসওয়ার্ড চেঞ্জ
 # ============================================
 
 @app.route('/api/change_password/<server_id>', methods=['POST'])
 def api_change_password(server_id):
-    if 'user' not in session:
-        return jsonify({'error': 'Please login first!'}), 403
-    
+    if 'user' not in session: return jsonify({'error': 'Please login first!'}), 403
     data = request.get_json()
     current_password = data.get('current_password', '')
     new_password = data.get('new_password', '')
     
-    if not current_password or not new_password:
-        return jsonify({'error': 'All fields are required!'})
-    
-    if len(new_password) < 4:
-        return jsonify({'error': 'Password must be at least 4 characters!'})
+    if not current_password or not new_password: return jsonify({'error': 'All fields are required!'})
+    if len(new_password) < 4: return jsonify({'error': 'Password must be at least 4 characters!'})
     
     users = load_users()
     username = session.get('user')
@@ -769,9 +827,7 @@ def api_change_password(server_id):
             users[username]['password'] = new_password
             save_users(users)
             return jsonify({'success': True, 'msg': 'Password changed!'})
-        else:
-            return jsonify({'error': 'Current password is incorrect!'})
-    
+        return jsonify({'error': 'Current password is incorrect!'})
     return jsonify({'error': 'User not found!'}), 404
 
 # ============================================
@@ -780,31 +836,20 @@ def api_change_password(server_id):
 
 @app.route('/api/files/<server_id>')
 def api_files(server_id):
-    folder = request.args.get('folder', '')  # 🔥 folder parameter
+    folder = request.args.get('folder', '')
     server_dir = get_server_dir(server_id)
-    
     if folder:
         server_dir = os.path.join(server_dir, folder)
-        # Security check
         if not os.path.abspath(server_dir).startswith(os.path.abspath(get_server_dir(server_id))):
             return jsonify({'files': []})
-    
-    if not os.path.exists(server_dir):
-        return jsonify({'files': []})
+    if not os.path.exists(server_dir): return jsonify({'files': []})
     
     files = []
     try:
         for item in os.listdir(server_dir):
             item_path = os.path.join(server_dir, item)
-            files.append({
-                'name': item,
-                'is_dir': os.path.isdir(item_path),
-                'size': os.path.getsize(item_path) if os.path.isfile(item_path) else 0,
-                'modified': datetime.fromtimestamp(os.path.getmtime(item_path)).strftime('%Y-%m-%d %H:%M')
-            })
-    except:
-        pass
-    
+            files.append({'name': item, 'is_dir': os.path.isdir(item_path), 'size': os.path.getsize(item_path) if os.path.isfile(item_path) else 0, 'modified': datetime.fromtimestamp(os.path.getmtime(item_path)).strftime('%Y-%m-%d %H:%M')})
+    except: pass
     return jsonify({'files': files})
 
 @app.route('/api/file/<server_id>', methods=['GET'])
@@ -812,8 +857,7 @@ def api_get_file(server_id):
     filename = request.args.get('filename', '')
     filepath = os.path.join(get_server_dir(server_id), filename)
     if os.path.exists(filepath) and os.path.isfile(filepath):
-        with open(filepath, 'r', encoding='utf-8') as f:
-            return jsonify({'content': f.read()})
+        with open(filepath, 'r', encoding='utf-8') as f: return jsonify({'content': f.read()})
     return jsonify({'error': 'Not found'}), 404
 
 @app.route('/api/file/<server_id>', methods=['POST'])
@@ -821,8 +865,7 @@ def api_save_file(server_id):
     data = request.get_json()
     filepath = os.path.join(get_server_dir(server_id), data.get('filename', ''))
     os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    with open(filepath, 'w', encoding='utf-8') as f:
-        f.write(data.get('content', ''))
+    with open(filepath, 'w', encoding='utf-8') as f: f.write(data.get('content', ''))
     return jsonify({'success': True})
 
 @app.route('/api/file/<server_id>', methods=['DELETE'])
@@ -830,36 +873,26 @@ def api_delete_file(server_id):
     data = request.get_json()
     filepath = os.path.join(get_server_dir(server_id), data.get('filename', ''))
     if os.path.exists(filepath):
-        if os.path.isdir(filepath):
-            shutil.rmtree(filepath)
-        else:
-            os.remove(filepath)
+        if os.path.isdir(filepath): shutil.rmtree(filepath)
+        else: os.remove(filepath)
     return jsonify({'success': True})
 
 @app.route('/api/upload/<server_id>', methods=['POST'])
 def api_upload(server_id):
-    if 'file' not in request.files:
-        return jsonify({'error': 'No file'}), 400
-    
-    folder = request.form.get('folder', '')  # 🔥 folder support
+    if 'file' not in request.files: return jsonify({'error': 'No file'}), 400
+    folder = request.form.get('folder', '')
     server_dir = get_server_dir(server_id)
-    
     if folder:
         server_dir = os.path.join(server_dir, folder)
         os.makedirs(server_dir, exist_ok=True)
-    
     file = request.files['file']
-    filepath = os.path.join(server_dir, file.filename)
-    file.save(filepath)
-    
-    return jsonify({'success': True, 'filename': file.filename})
+    file.save(os.path.join(server_dir, file.filename))
+    return jsonify({'success': True})
 
 @app.route('/api/create_folder/<server_id>', methods=['POST'])
 def api_create_folder(server_id):
     data = request.get_json()
-    foldername = data.get('foldername', '')
-    folderpath = os.path.join(get_server_dir(server_id), foldername)
-    os.makedirs(folderpath, exist_ok=True)
+    os.makedirs(os.path.join(get_server_dir(server_id), data.get('foldername', '')), exist_ok=True)
     return jsonify({'success': True})
 
 @app.route('/api/rename/<server_id>', methods=['POST'])
@@ -876,26 +909,18 @@ def api_rename(server_id):
 @app.route('/api/unzip/<server_id>', methods=['POST'])
 def api_unzip(server_id):
     data = request.get_json()
-    server_dir = get_server_dir(server_id)
-    zip_path = os.path.join(server_dir, data.get('filename', ''))
+    zip_path = os.path.join(get_server_dir(server_id), data.get('filename', ''))
     if os.path.exists(zip_path) and zip_path.endswith('.zip'):
         try:
-            extract_dir = os.path.dirname(zip_path)
-            with zipfile.ZipFile(zip_path, 'r') as zf:
-                zf.extractall(extract_dir)
+            with zipfile.ZipFile(zip_path, 'r') as zf: zf.extractall(os.path.dirname(zip_path))
             return jsonify({'status': 'success', 'msg': 'Extracted!'})
-        except Exception as e:
-            return jsonify({'status': 'error', 'msg': str(e)})
-    return jsonify({'status': 'error', 'msg': 'Invalid zip file'}), 400
+        except Exception as e: return jsonify({'status': 'error', 'msg': str(e)})
+    return jsonify({'status': 'error', 'msg': 'Invalid zip'}), 400
 
 @app.route('/api/get_startup/<server_id>')
 def api_get_startup(server_id):
     server, _ = get_server_by_id(server_id)
-    if server:
-        return jsonify({
-            'main_file': server.get('main_file', 'main.py'),
-            'requirements_file': server.get('requirements_file', 'requirements.txt')
-        })
+    if server: return jsonify({'main_file': server.get('main_file', 'main.py'), 'requirements_file': server.get('requirements_file', 'requirements.txt')})
     return jsonify({'main_file': 'main.py', 'requirements_file': 'requirements.txt'})
 
 @app.route('/api/set_startup/<server_id>', methods=['POST'])
@@ -920,11 +945,10 @@ def api_set_startup(server_id):
 
 if __name__ == '__main__':
     print("\n" + "=" * 50)
-    print("JUBAYER HOSTING - FINAL")
+    print("🚀 JUBAYER HOSTING - FINAL COMPLETE")
     print("=" * 50)
-    print("Admin: http://localhost:5000/login")
-    print("User: http://localhost:5000/{id}/login")
-    print("Max Upload: 50MB")
-    print("Folder Navigation: ON")
+    print("📍 Admin: http://localhost:5000/login")
+    print("🔗 API: http://localhost:5000/api/create")
+    print("👤 admin / admin123")
     print("=" * 50 + "\n")
     app.run(debug=True, host='0.0.0.0', port=5000)
