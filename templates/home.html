@@ -31,16 +31,25 @@
         .btn { transition:all 0.2s; font-weight:600; font-size:13px; }
         .btn:active { transform:scale(0.95); }
         
-        .status-dot {
-            display: inline-block;
-            width: 6px;
-            height: 6px;
-            border-radius: 50%;
-            margin-right: 4px;
-            vertical-align: middle;
-            position: relative;
-            top: -1px;
+        .status-dot { display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:4px;vertical-align:middle;position:relative;top:-1px; }
+        
+        .dropdown { position:relative; display:inline-block; }
+        .dropdown-menu {
+            position:absolute; right:0; top:100%; background:#1a1d27; border:1px solid #2a2d37;
+            border-radius:8px; min-width:140px; z-index:100; display:none; box-shadow:0 10px 30px rgba(0,0,0,0.5);
         }
+        .dropdown-menu.show { display:block; }
+        .dropdown-menu button {
+            display:block; width:100%; text-align:left; padding:8px 14px; font-size:12px;
+            color:#d1d5db; transition:all 0.2s; border:none; background:none; cursor:pointer;
+        }
+        .dropdown-menu button:hover { background:#252836; color:#fff; }
+        .dropdown-menu button:first-child { border-radius:8px 8px 0 0; }
+        .dropdown-menu button:last-child { border-radius:0 0 8px 8px; }
+        .dropdown-menu button i { width:16px; margin-right:8px; }
+        
+        .folder-link { cursor:pointer; color:#eab308; }
+        .folder-link:hover { text-decoration:underline; }
     </style>
 </head>
 <body>
@@ -95,7 +104,7 @@
             <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mt-4">
                 <div class="stat-card">
                     <p class="text-[10px] text-gray-500 mb-1"><i class="fas fa-link mr-1"></i>ADDRESS</p>
-                    <p class="text-xs text-blue-400 font-mono truncate" id="serverAddr" title="Click to copy"></p>
+                    <p class="text-xs text-blue-400 font-mono truncate" id="serverAddr" title="Server Address"></p>
                 </div>
                 <div class="stat-card">
                     <p class="text-[10px] text-gray-500 mb-1"><i class="fas fa-microchip mr-1"></i>CPU</p>
@@ -116,25 +125,27 @@
                 <div class="stat-card">
                     <p class="text-[10px] text-gray-500 mb-1">STATUS</p>
                     <p class="text-sm font-bold" id="statusDisplay">
-                        <span class="text-red-400">
-                            <span class="status-dot" style="background:#ef4444;"></span>STOPPED
-                        </span>
+                        <span class="text-red-400"><span class="status-dot" style="background:#ef4444;"></span>STOPPED</span>
                     </p>
                 </div>
             </div>
         </div>
 
         <div id="files-tab" class="hidden">
-            <div class="mb-4 flex justify-between flex-wrap gap-2">
-                <span class="text-sm text-gray-500 bg-[#0c0e14] px-3 py-1 rounded">/{{ current_server.server_id }}/</span>
+            <div class="mb-4 flex justify-between flex-wrap gap-2 items-center">
+                <span class="text-sm text-gray-300" id="currentPathDisplay">/</span>
                 <div class="flex gap-2">
                     <input type="file" id="fileInput" class="hidden" onchange="uploadFile()">
-                    <button onclick="document.getElementById('fileInput').click()" class="bg-blue-600 hover:bg-blue-500 px-3 py-1.5 rounded-lg text-xs"><i class="fas fa-upload"></i> Upload</button>
+                    <button onclick="document.getElementById('fileInput').click()" class="bg-blue-600 hover:bg-blue-500 px-3 py-1.5 rounded-lg text-xs"><i class="fas fa-upload"></i> Upload (Max 50MB)</button>
                     <button onclick="createFolder()" class="bg-gray-600 hover:bg-gray-500 px-3 py-1.5 rounded-lg text-xs"><i class="fas fa-folder-plus"></i> Folder</button>
                     <button onclick="createFile()" class="bg-gray-600 hover:bg-gray-500 px-3 py-1.5 rounded-lg text-xs"><i class="fas fa-file-plus"></i> File</button>
                 </div>
             </div>
-            <div class="bg-[#12141c] rounded-xl border border-gray-800"><div id="fileList" class="divide-y divide-gray-800"><div class="p-6 text-center text-gray-500">Loading...</div></div></div>
+            <div class="bg-[#12141c] rounded-xl border border-gray-800">
+                <div id="fileList" class="divide-y divide-gray-800">
+                    <div class="p-6 text-center text-gray-500">Loading...</div>
+                </div>
+            </div>
         </div>
 
         <div id="startup-tab" class="hidden">
@@ -152,22 +163,12 @@
             </div>
         </div>
 
-        <!-- 🔑 New Credentials Tab -->
         <div id="credentials-tab" class="hidden">
             <div class="bg-[#12141c] rounded-xl border border-gray-800 p-5">
                 <h3 class="text-md font-bold mb-4 text-blue-400"><i class="fas fa-key mr-2"></i>Change Password</h3>
-                <div class="mb-4">
-                    <label class="block text-gray-400 text-sm mb-1">Current Password</label>
-                    <input type="password" id="currentPassword" class="w-full bg-[#0c0e14] border border-gray-700 rounded-lg px-3 py-2 text-sm text-white" placeholder="Enter current password">
-                </div>
-                <div class="mb-4">
-                    <label class="block text-gray-400 text-sm mb-1">New Password</label>
-                    <input type="password" id="newPassword" class="w-full bg-[#0c0e14] border border-gray-700 rounded-lg px-3 py-2 text-sm text-white" placeholder="Enter new password">
-                </div>
-                <div class="mb-4">
-                    <label class="block text-gray-400 text-sm mb-1">Confirm New Password</label>
-                    <input type="password" id="confirmPassword" class="w-full bg-[#0c0e14] border border-gray-700 rounded-lg px-3 py-2 text-sm text-white" placeholder="Confirm new password">
-                </div>
+                <div class="mb-4"><label class="block text-gray-400 text-sm mb-1">Current Password</label><input type="password" id="currentPassword" class="w-full bg-[#0c0e14] border border-gray-700 rounded-lg px-3 py-2 text-sm text-white" placeholder="Enter current password"></div>
+                <div class="mb-4"><label class="block text-gray-400 text-sm mb-1">New Password</label><input type="password" id="newPassword" class="w-full bg-[#0c0e14] border border-gray-700 rounded-lg px-3 py-2 text-sm text-white" placeholder="Enter new password"></div>
+                <div class="mb-4"><label class="block text-gray-400 text-sm mb-1">Confirm New Password</label><input type="password" id="confirmPassword" class="w-full bg-[#0c0e14] border border-gray-700 rounded-lg px-3 py-2 text-sm text-white" placeholder="Confirm new password"></div>
                 <button onclick="changePassword()" class="bg-blue-600 hover:bg-blue-500 px-5 py-2 rounded-lg text-sm font-bold"><i class="fas fa-lock mr-1"></i> Change Password</button>
             </div>
         </div>
@@ -190,60 +191,50 @@
         let editingFile = null;
         let activeTab = 'console';
         let activeToast = null;
+        let currentFolder = '';
+        const MAX_FILE_SIZE = 50 * 1024 * 1024;
 
-        // 🔥 Set real address on load
         document.getElementById('serverAddr').innerText = window.location.href;
+
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.dropdown')) {
+                document.querySelectorAll('.dropdown-menu').forEach(m => m.classList.remove('show'));
+            }
+        });
 
         function showToast(message, type='info', duration=4000) {
             const container = document.getElementById('toastContainer');
-            
-            if (activeToast && type !== 'info') {
-                updateToast(activeToast, message, type, duration);
-                return;
-            }
-            
-            const toast = document.createElement('div');
-            toast.className = `toast ${type}`;
-            
+            if (activeToast && type !== 'info') { updateToast(activeToast, message, type, duration); return; }
+            const toast = document.createElement('div'); toast.className = `toast ${type}`;
             let iconHTML = '';
             if (type === 'info') iconHTML = '<div class="spinner"></div>';
             else if (type === 'success') iconHTML = '<i class="fas fa-check-circle text-green-400 text-lg"></i>';
             else if (type === 'error') iconHTML = '<i class="fas fa-times-circle text-red-400 text-lg"></i>';
             else if (type === 'warning') iconHTML = '<i class="fas fa-exclamation-triangle text-yellow-400 text-lg"></i>';
-            
             toast.innerHTML = `<div class="flex-shrink-0">${iconHTML}</div><div class="flex-1"><p class="text-sm">${message}</p></div><button onclick="this.parentElement.remove();activeToast=null;" class="text-gray-500 hover:text-gray-300"><i class="fas fa-times text-xs"></i></button>`;
-            
             container.appendChild(toast);
             if (type === 'info') activeToast = toast;
-            
             if (duration > 0 && type !== 'info') {
-                setTimeout(() => {
-                    toast.style.animation = 'slideOut 0.3s ease-out forwards';
-                    setTimeout(() => { toast.remove(); if(activeToast===toast) activeToast=null; }, 300);
-                }, duration);
+                setTimeout(() => { toast.style.animation = 'slideOut 0.3s ease-out forwards'; setTimeout(() => { toast.remove(); if(activeToast===toast) activeToast=null; }, 300); }, duration);
             }
         }
 
         function updateToast(toast, message, type, duration) {
-            const iconDiv = toast.querySelector('.flex-shrink-0');
-            const msgP = toast.querySelector('.text-sm');
-            
+            const iconDiv = toast.querySelector('.flex-shrink-0'); const msgP = toast.querySelector('.text-sm');
             if (iconDiv) {
                 if (type === 'success') iconDiv.innerHTML = '<i class="fas fa-check-circle text-green-400 text-lg"></i>';
                 else if (type === 'error') iconDiv.innerHTML = '<i class="fas fa-times-circle text-red-400 text-lg"></i>';
                 else if (type === 'warning') iconDiv.innerHTML = '<i class="fas fa-exclamation-triangle text-yellow-400 text-lg"></i>';
             }
             if (msgP) msgP.textContent = message;
-            
-            toast.className = `toast ${type}`;
-            activeToast = null;
-            
-            if (duration > 0) {
-                setTimeout(() => {
-                    toast.style.animation = 'slideOut 0.3s ease-out forwards';
-                    setTimeout(() => toast.remove(), 300);
-                }, duration);
-            }
+            toast.className = `toast ${type}`; activeToast = null;
+            if (duration > 0) { setTimeout(() => { toast.style.animation = 'slideOut 0.3s ease-out forwards'; setTimeout(() => toast.remove(), 300); }, duration); }
+        }
+
+        function toggleDropdown(event, fileId) {
+            event.stopPropagation();
+            document.querySelectorAll('.dropdown-menu').forEach(m => { if (m.id !== 'dropdown-' + fileId) m.classList.remove('show'); });
+            document.getElementById('dropdown-' + fileId).classList.toggle('show');
         }
 
         function showTab(tab) {
@@ -256,7 +247,7 @@
                 const btn = document.getElementById(`tab-${t}`);
                 if(btn) btn.className = tab===t ? 'pb-2 px-1 text-sm tab-active' : 'pb-2 px-1 text-sm text-gray-400';
             });
-            if(tab==='files') loadFileList();
+            if(tab==='files') loadFileList(currentFolder);
             if(tab==='startup') loadStartup();
         }
 
@@ -296,9 +287,7 @@
         }
 
         function sendCmd() {
-            let inp = document.getElementById('cmdInput');
-            let val = inp.value.trim();
-            if(!val) return;
+            let inp = document.getElementById('cmdInput'); let val = inp.value.trim(); if(!val) return;
             let d = new Date().toLocaleTimeString('en-US',{hour12:false});
             document.getElementById('logs').innerHTML += `\n<span style="color:#fa0">[${d}] $ ${val}</span>`;
             fetch('/api/command', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({cmd:val, server_id:currentServerId})}).then(()=>{inp.value='';});
@@ -310,17 +299,11 @@
                 document.getElementById('ramDisplay').innerText = data.ram || '0 MB';
                 document.getElementById('netInDisplay').innerText = data.net_in || '0 KB';
                 document.getElementById('netOutDisplay').innerText = data.net_out || '0 KB';
-                
                 const status = (data.status||'stopped').toUpperCase();
                 const isRunning = status === 'RUNNING';
                 const color = isRunning ? '#10b981' : '#ef4444';
                 const textColor = isRunning ? 'text-green-400' : 'text-red-400';
-                
-                document.getElementById('statusDisplay').innerHTML = `
-                    <span class="${textColor}">
-                        <span class="status-dot" style="background:${color};"></span>${status}
-                    </span>
-                `;
+                document.getElementById('statusDisplay').innerHTML = `<span class="${textColor}"><span class="status-dot" style="background:${color};"></span>${status}</span>`;
             });
         }
 
@@ -331,13 +314,102 @@
             });
         }
 
-        function loadFileList() {
-            fetch(`/api/files/${currentServerId}`).then(r=>r.json()).then(data => {
-                if(!data.files||data.files.length===0) { document.getElementById('fileList').innerHTML='<div class="p-6 text-center text-gray-500">No files</div>'; return; }
+        function updateBreadcrumb() {
+            const display = document.getElementById('currentPathDisplay');
+            if (!currentFolder) {
+                display.innerHTML = '<i class="fas fa-folder-open mr-1 text-yellow-500"></i> /';
+            } else {
+                const parts = currentFolder.split('/').filter(p => p);
+                let html = '<i class="fas fa-folder-open mr-1 text-yellow-500"></i> ';
+                html += '<a onclick="navigateTo(\'\')" class="cursor-pointer text-blue-400 hover:underline">/</a>';
+                let path = '';
+                parts.forEach((part, i) => {
+                    path += '/' + part;
+                    if (i === parts.length - 1) {
+                        html += `<span class="text-gray-400">${part}</span>`;
+                    } else {
+                        html += `<a onclick="navigateTo('${path}')" class="cursor-pointer text-blue-400 hover:underline">/${part}</a>`;
+                    }
+                });
+                display.innerHTML = html;
+            }
+        }
+
+        function navigateTo(folder) {
+            currentFolder = folder;
+            loadFileList(folder);
+        }
+
+        function loadFileList(folder = '') {
+            currentFolder = folder;
+            updateBreadcrumb();
+            
+            let url = `/api/files/${currentServerId}`;
+            if (folder) url += `?folder=${encodeURIComponent(folder)}`;
+            
+            fetch(url).then(r=>r.json()).then(data => {
+                if(!data.files||data.files.length===0) { 
+                    document.getElementById('fileList').innerHTML=`<div class="p-6 text-center text-gray-500"><i class="fas fa-folder-open mr-2"></i>Empty folder</div>`; 
+                    return; 
+                }
                 let h = '<table class="w-full text-sm"><tbody>';
-                data.files.forEach(f => {
-                    let icon = f.is_dir ? '<i class="fas fa-folder text-yellow-500 mr-2"></i>' : '<i class="fas fa-file-code text-blue-400 mr-2"></i>';
-                    h += `<tr class="border-b border-gray-800 hover:bg-[#1a1d27]"><td class="p-3">${icon}${f.name}</td><td class="p-3 text-gray-400 text-xs">${f.is_dir?'-':(f.size/1024).toFixed(1)+' KB'}</td><td class="p-3 text-gray-500 text-xs">${f.modified}</td><td class="p-3 text-right">${!f.is_dir?`<button onclick="editFile('${f.name}')" class="text-blue-400 mr-2"><i class="fas fa-edit"></i></button>`:''}<button onclick="renameFilePrompt('${f.name}')" class="text-yellow-400 mr-2"><i class="fas fa-i-cursor"></i></button><button onclick="deleteFile('${f.name}')" class="text-red-400"><i class="fas fa-trash"></i></button></td></tr>`;
+                
+                if (folder) {
+                    const parentFolder = folder.split('/').slice(0, -1).join('/');
+                    h += `<tr class="border-b border-gray-800 hover:bg-[#1a1d27] cursor-pointer" onclick="navigateTo('${parentFolder}')">
+                        <td class="p-3" colspan="4"><i class="fas fa-arrow-left text-gray-400 mr-2"></i><span class="text-gray-400">.. (Go Back)</span></td>
+                    </tr>`;
+                }
+                
+                data.files.forEach((f, index) => {
+                    const fileId = 'file-' + index;
+                    
+                    if (f.is_dir) {
+                        const folderPath = folder ? folder + '/' + f.name : f.name;
+                        h += `<tr class="border-b border-gray-800 hover:bg-[#1a1d27] cursor-pointer" onclick="navigateTo('${folderPath}')">
+                            <td class="p-3"><i class="fas fa-folder text-yellow-500 mr-2"></i><span class="text-yellow-400">${f.name}</span></td>
+                            <td class="p-3 text-gray-400 text-xs">-</td>
+                            <td class="p-3 text-gray-500 text-xs">${f.modified}</td>
+                            <td class="p-3 text-right">
+                                <div class="dropdown" onclick="event.stopPropagation()">
+                                    <button onclick="toggleDropdown(event, '${fileId}')" class="text-gray-400 hover:text-white px-2 py-1 rounded"><i class="fas fa-ellipsis-v"></i></button>
+                                    <div class="dropdown-menu" id="dropdown-${fileId}">
+                                        <button onclick="renameFilePrompt('${f.name}');document.querySelectorAll('.dropdown-menu').forEach(m=>m.classList.remove('show'));"><i class="fas fa-i-cursor text-yellow-400"></i> Rename</button>
+                                        <button onclick="deleteFile('${f.name}');document.querySelectorAll('.dropdown-menu').forEach(m=>m.classList.remove('show'));"><i class="fas fa-trash text-red-400"></i> Delete</button>
+                                    </div>
+                                </div>
+                            </td>
+                        </tr>`;
+                    } else {
+                        let icon = f.name.endsWith('.zip') ? '<i class="fas fa-file-archive text-orange-400 mr-2"></i>' : '<i class="fas fa-file-code text-blue-400 mr-2"></i>';
+                        let size = (f.size/1024).toFixed(1) + ' KB';
+                        if (f.size > 1024*1024) size = (f.size/(1024*1024)).toFixed(1) + ' MB';
+                        
+                        let menuItems = '';
+                        if (f.name.endsWith('.zip')) {
+                            // 🔥 Zip file: Extract + Rename + Delete
+                            menuItems += `<button onclick="unzipFile('${f.name}');document.querySelectorAll('.dropdown-menu').forEach(m=>m.classList.remove('show'));"><i class="fas fa-file-archive text-green-400"></i> Extract</button>`;
+                            menuItems += `<button onclick="renameFilePrompt('${f.name}');document.querySelectorAll('.dropdown-menu').forEach(m=>m.classList.remove('show'));"><i class="fas fa-i-cursor text-yellow-400"></i> Rename</button>`;
+                            menuItems += `<button onclick="deleteFile('${f.name}');document.querySelectorAll('.dropdown-menu').forEach(m=>m.classList.remove('show'));"><i class="fas fa-trash text-red-400"></i> Delete</button>`;
+                        } else {
+                            // Normal file: Edit + Rename + Delete
+                            menuItems += `<button onclick="editFile('${f.name}');document.querySelectorAll('.dropdown-menu').forEach(m=>m.classList.remove('show'));"><i class="fas fa-edit text-blue-400"></i> Edit</button>`;
+                            menuItems += `<button onclick="renameFilePrompt('${f.name}');document.querySelectorAll('.dropdown-menu').forEach(m=>m.classList.remove('show'));"><i class="fas fa-i-cursor text-yellow-400"></i> Rename</button>`;
+                            menuItems += `<button onclick="deleteFile('${f.name}');document.querySelectorAll('.dropdown-menu').forEach(m=>m.classList.remove('show'));"><i class="fas fa-trash text-red-400"></i> Delete</button>`;
+                        }
+                        
+                        h += `<tr class="border-b border-gray-800 hover:bg-[#1a1d27]">
+                            <td class="p-3">${icon}${f.name}</td>
+                            <td class="p-3 text-gray-400 text-xs">${size}</td>
+                            <td class="p-3 text-gray-500 text-xs">${f.modified}</td>
+                            <td class="p-3 text-right">
+                                <div class="dropdown">
+                                    <button onclick="toggleDropdown(event, '${fileId}')" class="text-gray-400 hover:text-white px-2 py-1 rounded"><i class="fas fa-ellipsis-v"></i></button>
+                                    <div class="dropdown-menu" id="dropdown-${fileId}">${menuItems}</div>
+                                </div>
+                            </td>
+                        </tr>`;
+                    }
                 });
                 h += '</tbody></table>';
                 document.getElementById('fileList').innerHTML = h;
@@ -347,47 +419,79 @@
         function uploadFile() {
             let f = document.getElementById('fileInput').files[0];
             if(!f) return;
+            
+            if (f.size > MAX_FILE_SIZE) {
+                showToast(`File too large! Max ${MAX_FILE_SIZE/(1024*1024)}MB allowed`, 'error', 4000);
+                document.getElementById('fileInput').value = '';
+                return;
+            }
+            
             let fd = new FormData(); fd.append('file', f);
+            if (currentFolder) fd.append('folder', currentFolder);
+            
             showToast('Uploading...', 'info', 0);
             fetch(`/api/upload/${currentServerId}`, {method:'POST', body:fd}).then(() => {
-                loadFileList(); document.getElementById('fileInput').value='';
+                loadFileList(currentFolder); document.getElementById('fileInput').value='';
                 showToast('Uploaded!', 'success', 2000);
             });
         }
 
-        function createFolder() { const n = prompt('Folder name:'); if(n) fetch(`/api/create_folder/${currentServerId}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({foldername:n})}).then(()=>loadFileList()); }
-        function createFile() { const n = prompt('File name:','newfile.py'); if(n) fetch(`/api/file/${currentServerId}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({filename:n, content:'# New file'})}).then(()=>loadFileList()); }
+        function createFolder() { 
+            const n = prompt('Folder name:'); 
+            if(n) {
+                const folderPath = currentFolder ? currentFolder + '/' + n : n;
+                fetch(`/api/create_folder/${currentServerId}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({foldername: folderPath})}).then(()=>loadFileList(currentFolder)); 
+            }
+        }
         
-        // 🔥 Rename function
+        function createFile() { 
+            const n = prompt('File name:','newfile.py'); 
+            if(n) {
+                const filePath = currentFolder ? currentFolder + '/' + n : n;
+                fetch(`/api/file/${currentServerId}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({filename: filePath, content:'# New file'})}).then(()=>loadFileList(currentFolder)); 
+            }
+        }
+        
+        function unzipFile(filename) {
+            const filePath = currentFolder ? currentFolder + '/' + filename : filename;
+            showToast('Extracting...', 'info', 0);
+            fetch(`/api/unzip/${currentServerId}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({filename: filePath})})
+            .then(r=>r.json()).then(data => {
+                if(data.status === 'success') { showToast('Extracted!', 'success', 3000); loadFileList(currentFolder); }
+                else showToast(data.msg || 'Failed!', 'error', 3000);
+            });
+        }
+        
         function renameFilePrompt(oldName) {
             const newName = prompt('Enter new name:', oldName);
             if(newName && newName !== oldName) {
-                fetch(`/api/rename/${currentServerId}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({old_name: oldName, new_name: newName})}).then(r=>r.json()).then(data => {
-                    if(data.success) {
-                        showToast('Renamed!', 'success', 2000);
-                        loadFileList();
-                    } else {
-                        showToast(data.error || 'Failed!', 'error', 3000);
-                    }
+                const oldPath = currentFolder ? currentFolder + '/' + oldName : oldName;
+                const newPath = currentFolder ? currentFolder + '/' + newName : newName;
+                fetch(`/api/rename/${currentServerId}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({old_name: oldPath, new_name: newPath})}).then(r=>r.json()).then(data => {
+                    if(data.success) { showToast('Renamed!', 'success', 2000); loadFileList(currentFolder); }
+                    else showToast(data.error || 'Failed!', 'error', 3000);
                 });
             }
         }
         
         function editFile(filename) {
-            editingFile = filename;
-            fetch(`/api/file/${currentServerId}?filename=${filename}`).then(r=>r.json()).then(data => {
+            editingFile = currentFolder ? currentFolder + '/' + filename : filename;
+            fetch(`/api/file/${currentServerId}?filename=${encodeURIComponent(editingFile)}`).then(r=>r.json()).then(data => {
                 document.getElementById('editor').value = data.content || '';
-                document.getElementById('editTitle').innerHTML = `<i class="fas fa-edit mr-2"></i>${filename}`;
+                document.getElementById('editTitle').innerHTML = `<i class="fas fa-edit mr-2"></i>${editingFile}`;
                 document.getElementById('editModal').classList.remove('hidden');
             });
         }
         
         function saveFileContent() {
-            fetch(`/api/file/${currentServerId}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({filename:editingFile, content:document.getElementById('editor').value})}).then(()=>{closeEdit();loadFileList();showToast('Saved!','success',2000);});
+            fetch(`/api/file/${currentServerId}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({filename:editingFile, content:document.getElementById('editor').value})}).then(()=>{closeEdit();loadFileList(currentFolder);showToast('Saved!','success',2000);});
         }
         
         function deleteFile(filename) {
-            if(confirm(`Delete "${filename}"?`)) fetch(`/api/file/${currentServerId}`, {method:'DELETE', headers:{'Content-Type':'application/json'}, body:JSON.stringify({filename:filename})}).then(()=>loadFileList());
+            const filePath = currentFolder ? currentFolder + '/' + filename : filename;
+            if(confirm(`Delete "${filename}"?`)) {
+                fetch(`/api/file/${currentServerId}`, {method:'DELETE', headers:{'Content-Type':'application/json'}, body:JSON.stringify({filename: filePath})}).then(()=>loadFileList(currentFolder));
+            }
         }
         
         function closeEdit() { document.getElementById('editModal').classList.add('hidden'); editingFile=null; }
@@ -403,46 +507,19 @@
             fetch(`/api/set_startup/${currentServerId}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({main_file:document.getElementById('mainFileInput').value.trim(), requirements_file:document.getElementById('requirementsInput').value.trim()||null})}).then(()=>showToast('Saved!','success',2000));
         }
 
-        // 🔥 Password Change Function
         function changePassword() {
             const current = document.getElementById('currentPassword').value;
             const newPass = document.getElementById('newPassword').value;
             const confirm = document.getElementById('confirmPassword').value;
-            
-            if(!current || !newPass || !confirm) {
-                showToast('Please fill all fields!', 'error', 3000);
-                return;
-            }
-            
-            if(newPass !== confirm) {
-                showToast('Passwords do not match!', 'error', 3000);
-                return;
-            }
-            
-            if(newPass.length < 4) {
-                showToast('Password must be at least 4 characters!', 'error', 3000);
-                return;
-            }
-            
+            if(!current || !newPass || !confirm) { showToast('Please fill all fields!', 'error', 3000); return; }
+            if(newPass !== confirm) { showToast('Passwords do not match!', 'error', 3000); return; }
+            if(newPass.length < 4) { showToast('Password must be at least 4 characters!', 'error', 3000); return; }
             showToast('Changing password...', 'info', 0);
-            
-            fetch(`/api/change_password/${currentServerId}`, {
-                method:'POST',
-                headers:{'Content-Type':'application/json'},
-                body:JSON.stringify({current_password: current, new_password: newPass})
-            })
-            .then(r=>r.json())
-            .then(data => {
-                if(data.success) {
-                    showToast('Password changed!', 'success', 3000);
-                    document.getElementById('currentPassword').value = '';
-                    document.getElementById('newPassword').value = '';
-                    document.getElementById('confirmPassword').value = '';
-                } else {
-                    showToast(data.error || 'Failed!', 'error', 4000);
-                }
-            })
-            .catch(() => showToast('Connection failed!', 'error', 4000));
+            fetch(`/api/change_password/${currentServerId}`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({current_password: current, new_password: newPass})})
+            .then(r=>r.json()).then(data => {
+                if(data.success) { showToast('Password changed!', 'success', 3000); document.getElementById('currentPassword').value=''; document.getElementById('newPassword').value=''; document.getElementById('confirmPassword').value=''; }
+                else showToast(data.error || 'Failed!', 'error', 4000);
+            }).catch(() => showToast('Connection failed!', 'error', 4000));
         }
 
         loadLogs(); updateStats();
