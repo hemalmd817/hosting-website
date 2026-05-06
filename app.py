@@ -15,7 +15,7 @@ import psutil
 
 app = Flask(__name__)
 app.secret_key = 'jubayer-super-secret-key-2026'
-app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max upload
 
 USERS_FILE = 'users.json'
 BOTS_DIR = 'bots'
@@ -186,13 +186,13 @@ def run_bot(server_id, main_file='main.py', requirements_file='requirements.txt'
     
     server, _ = get_server_by_id(server_id)
     cpu_limit = server.get('cpu_limit', 80) if server else 80
-    log(f"[{ts()}] 🔍 Checking rate limit...")
-    log(f"[{ts()}] ✅ Rate limit: {cpu_limit}%")
+    log(f"[{ts()}] Checking rate limit...")
+    log(f"[{ts()}] Rate limit: {cpu_limit}%")
     log("")
     
     if requirements_file and requirements_file.strip():
         req_path = os.path.join(server_dir, requirements_file.strip())
-        log(f"[{ts()}] 📦 Run: pip install -r {requirements_file}")
+        log(f"[{ts()}] Run: pip install -r {requirements_file}")
         log("")
         
         if os.path.exists(req_path):
@@ -218,20 +218,20 @@ def run_bot(server_id, main_file='main.py', requirements_file='requirements.txt'
                     log("")
                     
                     if proc.returncode != 0:
-                        log(f"[{ts()}] ⚠️ Some packages failed to install")
+                        log(f"[{ts()}] Some packages failed to install")
                     else:
-                        log(f"[{ts()}] ✅ Requirements installation complete!")
+                        log(f"[{ts()}] Requirements installation complete!")
                 except Exception as e:
-                    log(f"[{ts()}] ❌ pip error: {str(e)}")
+                    log(f"[{ts()}] pip error: {str(e)}")
             else:
-                log(f"[{ts()}] 📋 {requirements_file} is empty, skipping...")
+                log(f"[{ts()}] {requirements_file} is empty, skipping...")
         else:
-            log(f"[{ts()}] 📋 {requirements_file} not found, skipping...")
+            log(f"[{ts()}] {requirements_file} not found, skipping...")
     else:
-        log(f"[{ts()}] 📋 No requirements file set, skipping...")
+        log(f"[{ts()}] No requirements file set, skipping...")
     
     log("")
-    log(f"[{ts()}] ▶️ Run: python {main_file}")
+    log(f"[{ts()}] Run: python {main_file}")
     log(f"[{ts()}] Python {sys.version.split()[0]}")
     log("")
     
@@ -250,7 +250,7 @@ def run_bot(server_id, main_file='main.py', requirements_file='requirements.txt'
             creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
         )
         
-        log(f"[{ts()}] ✅ Server marked as running")
+        log(f"[{ts()}] Server marked as running")
         log(f"[{ts()}] PID: {proc.pid}")
         log("")
         
@@ -275,8 +275,8 @@ def run_bot(server_id, main_file='main.py', requirements_file='requirements.txt'
                 time.sleep(5)
                 exceeded, avg_cpu = rate_limiter.check_rate(server_id, cpu_limit)
                 if exceeded:
-                    log(f"[{datetime.now().strftime('%I:%M:%S %p')}] ⚠️ CPU Limit! {avg_cpu:.1f}% > {cpu_limit}%")
-                    log(f"[{datetime.now().strftime('%I:%M:%S %p')}] 🛑 Stopping server due to rate limit...")
+                    log(f"[{datetime.now().strftime('%I:%M:%S %p')}] CPU Limit! {avg_cpu:.1f}% > {cpu_limit}%")
+                    log(f"[{datetime.now().strftime('%I:%M:%S %p')}] Stopping server due to rate limit...")
                     proc.terminate()
                     time.sleep(2)
                     if proc.poll() is None: proc.kill()
@@ -322,7 +322,7 @@ def run_bot(server_id, main_file='main.py', requirements_file='requirements.txt'
         return proc.pid, None
         
     except Exception as e:
-        log(f"[{ts()}] ❌ Error: {str(e)}")
+        log(f"[{ts()}] Error: {str(e)}")
         return None, str(e)
 
 def stop_bot_process(pid):
@@ -658,8 +658,7 @@ def api_stop(server_id):
     log_file = os.path.join(get_server_dir(server_id), 'output.log')
     try:
         with open(log_file, 'a', encoding='utf-8') as f:
-            f.write(f"\n[{datetime.now().strftime('%I:%M:%S %p')}] 🛑 Server stopped by user\n")
-            f.write(f"[{datetime.now().strftime('%I:%M:%S %p')}] ✅ Server marked as stopped\n")
+            f.write(f"\n[{datetime.now().strftime('%I:%M:%S %p')}] Server stopped by user\n")
     except: pass
     
     return jsonify({'status': 'success', 'msg': 'Stopped'})
@@ -744,7 +743,7 @@ def api_stats(server_id):
     })
 
 # ============================================
-# 🔑 পাসওয়ার্ড চেঞ্জ API
+# পাসওয়ার্ড চেঞ্জ API
 # ============================================
 
 @app.route('/api/change_password/<server_id>', methods=['POST'])
@@ -769,7 +768,7 @@ def api_change_password(server_id):
         if users[username].get('password') == current_password:
             users[username]['password'] = new_password
             save_users(users)
-            return jsonify({'success': True, 'msg': 'Password changed successfully!'})
+            return jsonify({'success': True, 'msg': 'Password changed!'})
         else:
             return jsonify({'error': 'Current password is incorrect!'})
     
@@ -781,21 +780,38 @@ def api_change_password(server_id):
 
 @app.route('/api/files/<server_id>')
 def api_files(server_id):
+    folder = request.args.get('folder', '')  # 🔥 folder parameter
+    server_dir = get_server_dir(server_id)
+    
+    if folder:
+        server_dir = os.path.join(server_dir, folder)
+        # Security check
+        if not os.path.abspath(server_dir).startswith(os.path.abspath(get_server_dir(server_id))):
+            return jsonify({'files': []})
+    
+    if not os.path.exists(server_dir):
+        return jsonify({'files': []})
+    
     files = []
-    for item in os.listdir(get_server_dir(server_id)):
-        item_path = os.path.join(get_server_dir(server_id), item)
-        files.append({
-            'name': item, 'is_dir': os.path.isdir(item_path),
-            'size': os.path.getsize(item_path) if os.path.isfile(item_path) else 0,
-            'modified': datetime.fromtimestamp(os.path.getmtime(item_path)).strftime('%Y-%m-%d %H:%M')
-        })
+    try:
+        for item in os.listdir(server_dir):
+            item_path = os.path.join(server_dir, item)
+            files.append({
+                'name': item,
+                'is_dir': os.path.isdir(item_path),
+                'size': os.path.getsize(item_path) if os.path.isfile(item_path) else 0,
+                'modified': datetime.fromtimestamp(os.path.getmtime(item_path)).strftime('%Y-%m-%d %H:%M')
+            })
+    except:
+        pass
+    
     return jsonify({'files': files})
 
 @app.route('/api/file/<server_id>', methods=['GET'])
 def api_get_file(server_id):
     filename = request.args.get('filename', '')
     filepath = os.path.join(get_server_dir(server_id), filename)
-    if os.path.exists(filepath):
+    if os.path.exists(filepath) and os.path.isfile(filepath):
         with open(filepath, 'r', encoding='utf-8') as f:
             return jsonify({'content': f.read()})
     return jsonify({'error': 'Not found'}), 404
@@ -803,48 +819,74 @@ def api_get_file(server_id):
 @app.route('/api/file/<server_id>', methods=['POST'])
 def api_save_file(server_id):
     data = request.get_json()
-    with open(os.path.join(get_server_dir(server_id), data.get('filename', '')), 'w', encoding='utf-8') as f:
+    filepath = os.path.join(get_server_dir(server_id), data.get('filename', ''))
+    os.makedirs(os.path.dirname(filepath), exist_ok=True)
+    with open(filepath, 'w', encoding='utf-8') as f:
         f.write(data.get('content', ''))
     return jsonify({'success': True})
 
 @app.route('/api/file/<server_id>', methods=['DELETE'])
 def api_delete_file(server_id):
-    filepath = os.path.join(get_server_dir(server_id), request.get_json().get('filename', ''))
+    data = request.get_json()
+    filepath = os.path.join(get_server_dir(server_id), data.get('filename', ''))
     if os.path.exists(filepath):
-        if os.path.isdir(filepath): shutil.rmtree(filepath)
-        else: os.remove(filepath)
+        if os.path.isdir(filepath):
+            shutil.rmtree(filepath)
+        else:
+            os.remove(filepath)
     return jsonify({'success': True})
 
 @app.route('/api/upload/<server_id>', methods=['POST'])
 def api_upload(server_id):
     if 'file' not in request.files:
         return jsonify({'error': 'No file'}), 400
-    request.files['file'].save(os.path.join(get_server_dir(server_id), request.files['file'].filename))
-    return jsonify({'success': True})
+    
+    folder = request.form.get('folder', '')  # 🔥 folder support
+    server_dir = get_server_dir(server_id)
+    
+    if folder:
+        server_dir = os.path.join(server_dir, folder)
+        os.makedirs(server_dir, exist_ok=True)
+    
+    file = request.files['file']
+    filepath = os.path.join(server_dir, file.filename)
+    file.save(filepath)
+    
+    return jsonify({'success': True, 'filename': file.filename})
 
 @app.route('/api/create_folder/<server_id>', methods=['POST'])
 def api_create_folder(server_id):
-    os.makedirs(os.path.join(get_server_dir(server_id), request.get_json().get('foldername', '')), exist_ok=True)
+    data = request.get_json()
+    foldername = data.get('foldername', '')
+    folderpath = os.path.join(get_server_dir(server_id), foldername)
+    os.makedirs(folderpath, exist_ok=True)
     return jsonify({'success': True})
 
 @app.route('/api/rename/<server_id>', methods=['POST'])
 def api_rename(server_id):
     d = request.get_json()
-    old = os.path.join(get_server_dir(server_id), d.get('old_name', ''))
-    new = os.path.join(get_server_dir(server_id), d.get('new_name', ''))
-    if os.path.exists(old):
-        os.rename(old, new)
+    server_dir = get_server_dir(server_id)
+    old_path = os.path.join(server_dir, d.get('old_name', ''))
+    new_path = os.path.join(server_dir, d.get('new_name', ''))
+    if os.path.exists(old_path):
+        os.rename(old_path, new_path)
         return jsonify({'success': True})
     return jsonify({'error': 'Not found'}), 404
 
 @app.route('/api/unzip/<server_id>', methods=['POST'])
 def api_unzip(server_id):
-    zip_path = os.path.join(get_server_dir(server_id), request.get_json().get('filename', ''))
-    if os.path.exists(zip_path):
-        with zipfile.ZipFile(zip_path, 'r') as zf:
-            zf.extractall(get_server_dir(server_id))
-        return jsonify({'status': 'success'})
-    return jsonify({'status': 'error'}), 400
+    data = request.get_json()
+    server_dir = get_server_dir(server_id)
+    zip_path = os.path.join(server_dir, data.get('filename', ''))
+    if os.path.exists(zip_path) and zip_path.endswith('.zip'):
+        try:
+            extract_dir = os.path.dirname(zip_path)
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                zf.extractall(extract_dir)
+            return jsonify({'status': 'success', 'msg': 'Extracted!'})
+        except Exception as e:
+            return jsonify({'status': 'error', 'msg': str(e)})
+    return jsonify({'status': 'error', 'msg': 'Invalid zip file'}), 400
 
 @app.route('/api/get_startup/<server_id>')
 def api_get_startup(server_id):
@@ -878,15 +920,11 @@ def api_set_startup(server_id):
 
 if __name__ == '__main__':
     print("\n" + "=" * 50)
-    print("🚀 JUBAYER HOSTING - FINAL")
+    print("JUBAYER HOSTING - FINAL")
     print("=" * 50)
     print("Admin: http://localhost:5000/login")
     print("User: http://localhost:5000/{id}/login")
-    print("=" * 50)
-    print("✅ Requirements.txt install")
-    print("✅ Stop message in console")
-    print("✅ Network stats real-time")
-    print("✅ Auto-restart crash only")
-    print("🔑 Password change API")
+    print("Max Upload: 50MB")
+    print("Folder Navigation: ON")
     print("=" * 50 + "\n")
     app.run(debug=True, host='0.0.0.0', port=5000)
