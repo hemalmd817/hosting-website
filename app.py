@@ -807,12 +807,12 @@ def api_change_password(server_id):
     return jsonify({'error': 'User not found!'}), 404
 
 # ============================================
-# 🔥 GITHUB API (Git ছাড়া Python Download)
+# 🔥 GITHUB API - Fixed for Render & Localhost
 # ============================================
 
 @app.route('/api/github/deploy/<server_id>', methods=['POST'])
 def api_github_deploy(server_id):
-    """Download GitHub repo without git - using Python requests"""
+    """Download GitHub repo - Works on both Render & Localhost"""
     data = request.get_json()
     repo_url = data.get('repo_url', '').strip()
     access_token = data.get('access_token', '').strip()
@@ -821,7 +821,7 @@ def api_github_deploy(server_id):
     if not repo_url:
         return jsonify({'status': 'error', 'msg': 'Repository URL is required!'}), 400
     
-    server_dir = get_server_dir(server_id)
+    server_dir = os.path.abspath(get_server_dir(server_id))
     log_file = os.path.join(server_dir, 'github_deploy.log')
     
     # Clear old deploy log
@@ -830,9 +830,10 @@ def api_github_deploy(server_id):
             f.write(f"[{datetime.now().strftime('%I:%M:%S %p')}] Starting GitHub deployment...\n")
             f.write(f"[{datetime.now().strftime('%I:%M:%S %p')}] Repository: {repo_url}\n")
             f.write(f"[{datetime.now().strftime('%I:%M:%S %p')}] Type: {'Private' if is_private else 'Public'}\n")
+            f.write(f"[{datetime.now().strftime('%I:%M:%S %p')}] Server Dir: {server_dir}\n")
             f.write("─" * 40 + "\n")
-    except:
-        pass
+    except Exception as e:
+        print(f"Log init error: {e}")
     
     def deploy_thread():
         try:
@@ -844,18 +845,14 @@ def api_github_deploy(server_id):
                     with open(log_file, 'a', encoding='utf-8') as f:
                         f.write(f"[{datetime.now().strftime('%I:%M:%S %p')}] {msg}\n")
                         f.flush()
-                except:
-                    pass
+                except Exception as e:
+                    print(f"Log write error: {e}")
             
             deploy_log("Preparing deployment...")
             
-            # Parse GitHub URL → owner/repo/branch
-            # Support: https://github.com/user/repo or https://github.com/user/repo.git
-            # Also: https://github.com/user/repo/tree/branch
-            
+            # Parse GitHub URL
             clean_url = repo_url.replace('.git', '').rstrip('/')
             
-            # Extract owner and repo
             if 'github.com' not in clean_url:
                 deploy_log("❌ Error: Only GitHub URLs are supported!")
                 return
@@ -864,13 +861,13 @@ def api_github_deploy(server_id):
             
             if len(parts) < 2:
                 deploy_log("❌ Error: Invalid GitHub URL format!")
+                deploy_log(f"Parsed parts: {parts}")
                 return
             
             owner = parts[0]
             repo = parts[1]
-            branch = 'main'  # default branch
+            branch = 'main'
             
-            # Check if branch is specified (tree/branch_name)
             if len(parts) > 3 and parts[2] == 'tree':
                 branch = parts[3]
             
@@ -882,85 +879,122 @@ def api_github_deploy(server_id):
             # Build API URL
             api_url = f"https://api.github.com/repos/{owner}/{repo}/zipball/{branch}"
             
-            headers = {'Accept': 'application/vnd.github.v3+json'}
+            headers = {
+                'Accept': 'application/vnd.github.v3+json',
+                'User-Agent': 'JUBAYER-HOSTING/1.0'
+            }
             if is_private and access_token:
                 headers['Authorization'] = f'token {access_token}'
                 deploy_log("Using access token for authentication")
             
             # Download ZIP
-            response = requests.get(api_url, headers=headers, stream=True, timeout=60)
+            deploy_log("Connecting to GitHub API...")
+            response = requests.get(api_url, headers=headers, stream=True, timeout=120)
             
             if response.status_code == 200:
                 deploy_log("✓ Repository downloaded successfully!")
                 deploy_log("Extracting files...")
                 
-                # Save to temp zip
+                # Save temp zip
                 temp_zip = os.path.join(server_dir, '_github_temp.zip')
                 with open(temp_zip, 'wb') as f:
                     for chunk in response.iter_content(chunk_size=8192):
-                        f.write(chunk)
+                        if chunk:
+                            f.write(chunk)
+                
+                deploy_log(f"ZIP saved to: {temp_zip}")
+                deploy_log(f"ZIP size: {os.path.getsize(temp_zip)} bytes")
                 
                 # Extract
                 try:
                     with zipfile.ZipFile(temp_zip, 'r') as zf:
-                        # GitHub zipball has a root folder like: owner-repo-commit_hash
-                        # Extract everything inside that folder
-                        root_folder = zf.namelist()[0].split('/')[0]
-                        
-                        for member in zf.namelist():
-                            # Skip the root folder
-                            relative_path = '/'.join(member.split('/')[1:])
-                            if not relative_path:
-                                continue
+                        # Get root folder name
+                        all_files = zf.namelist()
+                        if all_files:
+                            root_folder = all_files[0].split('/')[0]
+                            deploy_log(f"Root folder in ZIP: {root_folder}")
                             
-                            target_path = os.path.join(server_dir, relative_path)
+                            file_count = 0
+                            for member in all_files:
+                                # Remove root folder prefix
+                                relative_path = '/'.join(member.split('/')[1:])
+                                if not relative_path:
+                                    continue
+                                
+                                # Build absolute target path
+                                target_path = os.path.join(server_dir, relative_path)
+                                
+                                if member.endswith('/'):
+                                    # Create directory
+                                    os.makedirs(target_path, exist_ok=True)
+                                else:
+                                    # Ensure directory exists
+                                    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+                                    # Extract file
+                                    with zf.open(member) as source, open(target_path, 'wb') as target:
+                                        shutil.copyfileobj(source, target)
+                                    file_count += 1
+                                    deploy_log(f"  ✓ {relative_path}")
                             
-                            if member.endswith('/'):
-                                # Directory
-                                os.makedirs(target_path, exist_ok=True)
-                            else:
-                                # File
-                                os.makedirs(os.path.dirname(target_path), exist_ok=True)
-                                with zf.open(member) as source, open(target_path, 'wb') as target:
-                                    shutil.copyfileobj(source, target)
-                                deploy_log(f"  ✓ {relative_path}")
+                            deploy_log(f"Total files extracted: {file_count}")
+                        else:
+                            deploy_log("❌ ZIP file is empty!")
                     
                     deploy_log("")
                     deploy_log("✅ Deployment completed successfully!")
-                    deploy_log(f"Files extracted to: {server_dir}")
+                    deploy_log(f"Files location: {server_dir}")
+                    
+                    # Verify extraction
+                    files_after = os.listdir(server_dir)
+                    deploy_log(f"Files in directory: {len(files_after)} items")
                     
                 except Exception as e:
                     deploy_log(f"❌ Extraction error: {str(e)}")
+                    import traceback
+                    deploy_log(f"Traceback: {traceback.format_exc()}")
                 finally:
                     # Clean up temp zip
                     try:
-                        os.remove(temp_zip)
-                    except:
-                        pass
+                        if os.path.exists(temp_zip):
+                            os.remove(temp_zip)
+                            deploy_log("Temporary ZIP cleaned up")
+                    except Exception as e:
+                        deploy_log(f"Cleanup error: {str(e)}")
                     
             elif response.status_code == 404:
                 deploy_log("❌ Error: Repository not found!")
-                deploy_log("Check if the URL is correct and the repo is accessible")
+                deploy_log("Check: URL correct? Repo public/accessible?")
             elif response.status_code == 401:
                 deploy_log("❌ Error: Authentication failed!")
-                deploy_log("Check your access token (for private repos)")
+                deploy_log("Check your access token permissions")
             elif response.status_code == 403:
-                deploy_log("❌ Error: Rate limit exceeded or access denied!")
-                deploy_log("Try again later or use an access token")
+                deploy_log("❌ Error: Rate limit or access denied!")
+                deploy_log(f"Response: {response.text[:300]}")
+            elif response.status_code == 302 or response.status_code == 301:
+                deploy_log("❌ Error: Redirect detected! Repo may have moved.")
+                deploy_log(f"Redirect to: {response.headers.get('Location', 'Unknown')}")
             else:
                 deploy_log(f"❌ Error: HTTP {response.status_code}")
-                deploy_log(f"Response: {response.text[:200]}")
+                deploy_log(f"Response: {response.text[:300]}")
             
         except requests.exceptions.Timeout:
             try:
                 with open(log_file, 'a', encoding='utf-8') as f:
-                    f.write(f"[{datetime.now().strftime('%I:%M:%S %p')}] ❌ Error: Connection timeout! Check your internet.\n")
+                    f.write(f"[{datetime.now().strftime('%I:%M:%S %p')}] ❌ Error: Connection timeout!\n")
+            except:
+                pass
+        except requests.exceptions.ConnectionError:
+            try:
+                with open(log_file, 'a', encoding='utf-8') as f:
+                    f.write(f"[{datetime.now().strftime('%I:%M:%S %p')}] ❌ Error: Cannot connect to GitHub! Check internet.\n")
             except:
                 pass
         except Exception as e:
             try:
                 with open(log_file, 'a', encoding='utf-8') as f:
                     f.write(f"[{datetime.now().strftime('%I:%M:%S %p')}] ❌ Error: {str(e)}\n")
+                    import traceback
+                    f.write(f"[{datetime.now().strftime('%I:%M:%S %p')}] Traceback: {traceback.format_exc()}\n")
             except:
                 pass
     
@@ -976,7 +1010,7 @@ def api_github_logs(server_id):
             with open(log_file, 'r', encoding='utf-8') as f:
                 logs = f.read()
         except:
-            logs = "> Ready for deployment..."
+            logs = "> Error reading logs..."
     else:
         logs = "> Ready for deployment..."
     return jsonify({'logs': logs})
@@ -988,9 +1022,9 @@ def api_github_clear_logs(server_id):
     try:
         if os.path.exists(log_file):
             os.remove(log_file)
-        return jsonify({'status': 'success'})
-    except:
-        return jsonify({'status': 'error'}), 500
+        return jsonify({'status': 'success', 'msg': 'Logs cleared!'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'msg': str(e)}), 500
 
 # ============================================
 # ফাইল API
